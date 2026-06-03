@@ -12,6 +12,21 @@
     <link rel="icon" href="./icon-192.png" />
     <link rel="apple-touch-icon" href="./icon-192.png" />
     <title>Disuko</title>
+    <!-- branch-root-fallback:start -->
+    <script>
+      window.__DISUKO_DEV__ = ["localhost", "127.0.0.1", "::1"].includes(
+        window.location.hostname
+      );
+
+      if (!window.__DISUKO_DEV__) {
+        const stylesheet = document.createElement("link");
+        stylesheet.rel = "stylesheet";
+        stylesheet.crossOrigin = "";
+        stylesheet.href = "./assets/index-kvgAT8NT.css";
+        document.head.appendChild(stylesheet);
+      }
+    </script>
+    <!-- branch-root-fallback:end -->
   </head>
   <body>
     <div id="root">
@@ -19,6 +34,22 @@
         <img src="./logo.png" alt="Disuko" />
       </div>
     </div>
-    <script type="module" src="/src/main.tsx"></script>
+    <script type="module" src="/src/main.tsx" data-dev-entry></script>
+    <!-- branch-root-fallback:start -->
+    <script>
+      if (!window.__DISUKO_DEV__) {
+        const devEntry = document.querySelector("[data-dev-entry]");
+        if (devEntry) {
+          devEntry.remove();
+        }
+
+        const appScript = document.createElement("script");
+        appScript.type = "module";
+        appScript.crossOrigin = "";
+        appScript.src = "./assets/index-DOdD26Tf.js";
+        document.body.appendChild(appScript);
+      }
+    </script>
+    <!-- branch-root-fallback:end -->
   </body>
 </html>
