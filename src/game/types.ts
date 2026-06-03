@@ -86,6 +86,5 @@ export interface GameState {
 
 export interface NewGameOptions {
   playerCount: 2 | 3 | 4;
-  playerNames?: string[];
   seed?: string;
 }

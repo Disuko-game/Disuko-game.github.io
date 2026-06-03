@@ -15,7 +15,8 @@ import {
   restoreGame,
   selectDie,
   setSelectedRerollDice,
-  serializeGame
+  serializeGame,
+  wouldPlaceDieConflict
 } from "./engine";
 import { boxIndex, cellsForBox } from "./geometry";
 
@@ -32,14 +33,21 @@ describe("Disuko board geometry", () => {
 });
 
 describe("Disuko rules engine", () => {
-  it("assigns the tabletop dice counts by player count", () => {
+  it("assigns the tabletop dice counts and numbered player names by player count", () => {
     expect(diceCountForPlayerCount(2)).toBe(18);
     expect(diceCountForPlayerCount(3)).toBe(12);
     expect(diceCountForPlayerCount(4)).toBe(9);
-    expect(newGame({ playerCount: 4, seed: "counts" }).dice).toHaveLength(36);
+    const game = newGame({ playerCount: 4, seed: "counts" });
+    expect(game.dice).toHaveLength(36);
+    expect(game.players.map((player) => player.name)).toEqual([
+      "Player 1",
+      "Player 2",
+      "Player 3",
+      "Player 4"
+    ]);
   });
 
-  it("detects row, column, and 2x3 box conflicts without blocking placement", () => {
+  it("detects row, column, and 2x3 box conflicts already on the board", () => {
     const game = newGame({ playerCount: 2, seed: "conflicts" });
     const [first, second] = game.dice.filter((die) => die.ownerId === "p1");
     first.value = 4;
@@ -55,14 +63,77 @@ describe("Disuko rules engine", () => {
     expect(conflicts.map((conflict) => conflict.id)).toContain("box:0:4");
   });
 
+  it("reports row, column, and 2x3 box conflicts before an off-board die is placed", () => {
+    const game = newGame({ playerCount: 2, seed: "would-conflict" });
+    const [placedDie, trayDie] = game.dice.filter((die) => die.ownerId === "p1");
+
+    placedDie.value = 2;
+    placedDie.row = 0;
+    placedDie.col = 0;
+    trayDie.value = 2;
+
+    expect(wouldPlaceDieConflict(game, trayDie.id, 0, 5)).toBe(true);
+    expect(wouldPlaceDieConflict(game, trayDie.id, 5, 0)).toBe(true);
+    expect(wouldPlaceDieConflict(game, trayDie.id, 2, 1)).toBe(true);
+    expect(wouldPlaceDieConflict(game, trayDie.id, 3, 3)).toBe(false);
+  });
+
+  it("auto-undoes an invalid placement and consumes that action", () => {
+    const game = newGame({ playerCount: 2, seed: "invalid-placement" });
+    const [placedDie, trayDie] = game.dice.filter((die) => die.ownerId === "p1");
+
+    placedDie.value = 4;
+    placedDie.row = 0;
+    placedDie.col = 0;
+    trayDie.value = 4;
+
+    const next = placeDie(game, trayDie.id, 0, 1);
+    const returnedDie = next.dice.find((die) => die.id === trayDie.id);
+
+    expect(returnedDie?.row).toBeNull();
+    expect(returnedDie?.col).toBeNull();
+    expect(next.message).toBe("invalid move");
+    expect(next.currentPlayerIndex).toBe(1);
+    expect(next.actionCredits).toBe(1);
+    expect(next.lastAction).toMatchObject({
+      type: "place",
+      playerId: "p1",
+      dieId: trayDie.id,
+      completedKeys: [],
+      conflictDieIds: []
+    });
+  });
+
+  it("spends one combo action on an invalid placement without passing the turn", () => {
+    const game = newGame({ playerCount: 2, seed: "invalid-combo-spend" });
+    const [placedDie, trayDie] = game.dice.filter((die) => die.ownerId === "p1");
+
+    game.actionCredits = 2;
+    placedDie.value = 5;
+    placedDie.row = 1;
+    placedDie.col = 1;
+    trayDie.value = 5;
+
+    const next = placeDie(game, trayDie.id, 2, 0);
+    const returnedDie = next.dice.find((die) => die.id === trayDie.id);
+
+    expect(returnedDie?.row).toBeNull();
+    expect(returnedDie?.col).toBeNull();
+    expect(next.currentPlayerIndex).toBe(0);
+    expect(next.actionCredits).toBe(1);
+    expect(next.message).toBe("invalid move");
+  });
+
   it("awards a combo action when a row is completed", () => {
     const game = newGame({ playerCount: 2, seed: "combo" });
     const blueDice = game.dice.filter((die) => die.ownerId === "p1");
 
     blueDice.slice(0, 5).forEach((die, index) => {
+      die.value = (index + 1) as typeof die.value;
       die.row = 0;
       die.col = index;
     });
+    blueDice[5].value = 6;
     game.completedKeys = calculateCompletionKeys(game).map((completion) => completion.key);
 
     const next = placeDie(game, blueDice[5].id, 0, 5);
@@ -76,9 +147,11 @@ describe("Disuko rules engine", () => {
     const columnGame = newGame({ playerCount: 2, seed: "column-combo" });
     const columnDice = columnGame.dice.filter((die) => die.ownerId === "p1");
     columnDice.slice(0, 5).forEach((die, index) => {
+      die.value = (index + 1) as typeof die.value;
       die.row = index;
       die.col = 0;
     });
+    columnDice[5].value = 6;
     columnGame.completedKeys = calculateCompletionKeys(columnGame).map((completion) => completion.key);
 
     const afterColumn = placeDie(columnGame, columnDice[5].id, 5, 0);
@@ -90,9 +163,11 @@ describe("Disuko rules engine", () => {
     cellsForBox(0)
       .slice(0, 5)
       .forEach((cell, index) => {
+        boxDice[index].value = (index + 1) as (typeof boxDice)[number]["value"];
         boxDice[index].row = cell.row;
         boxDice[index].col = cell.col;
       });
+    boxDice[5].value = 6;
     boxGame.completedKeys = calculateCompletionKeys(boxGame).map((completion) => completion.key);
 
     const boxFinalCell = cellsForBox(0)[5];
@@ -104,8 +179,8 @@ describe("Disuko rules engine", () => {
     const valueDice = valueGame.dice.filter((die) => die.ownerId === "p1");
     const valueCells = [
       { row: 0, col: 0 },
-      { row: 0, col: 2 },
-      { row: 1, col: 4 },
+      { row: 1, col: 2 },
+      { row: 2, col: 4 },
       { row: 3, col: 1 },
       { row: 4, col: 3 },
       { row: 5, col: 5 }
@@ -168,7 +243,7 @@ describe("Disuko rules engine", () => {
     ];
 
     setupCells.forEach((cell, index) => {
-      blueDice[index].value = ((index % 6) + 1) as (typeof blueDice)[number]["value"];
+      blueDice[index].value = ((index % 5) + 1) as (typeof blueDice)[number]["value"];
       blueDice[index].row = cell.row;
       blueDice[index].col = cell.col;
     });
@@ -405,9 +480,11 @@ describe("Disuko rules engine", () => {
     blueDice[0].row = 0;
     blueDice[0].col = 0;
     blueDice[1].value = 3;
+    blueDice[1].row = 3;
+    blueDice[1].col = 3;
 
-    const placed = placeDie(game, blueDice[1].id, 0, 1);
-    const challenged = challengeViolation(placed);
+    const moved = moveDie(game, blueDice[1].id, 0, 1);
+    const challenged = challengeViolation(moved);
     const returned = challenged.dice.find((die) => die.id === blueDice[1].id);
 
     expect(returned?.row).toBeNull();
@@ -422,9 +499,11 @@ describe("Disuko rules engine", () => {
     olderClickDice[0].row = 0;
     olderClickDice[0].col = 0;
     olderClickDice[1].value = 3;
+    olderClickDice[1].row = 3;
+    olderClickDice[1].col = 3;
 
-    const olderClickPlaced = placeDie(clickOlderDieGame, olderClickDice[1].id, 0, 1);
-    const olderClickChallenged = challengeViolation(olderClickPlaced, olderClickDice[0].id);
+    const olderClickMoved = moveDie(clickOlderDieGame, olderClickDice[1].id, 0, 1);
+    const olderClickChallenged = challengeViolation(olderClickMoved, olderClickDice[0].id);
 
     expect(olderClickChallenged.dice.find((die) => die.id === olderClickDice[1].id)?.row).toBeNull();
 
@@ -434,9 +513,11 @@ describe("Disuko rules engine", () => {
     newerClickDice[0].row = 0;
     newerClickDice[0].col = 0;
     newerClickDice[1].value = 3;
+    newerClickDice[1].row = 3;
+    newerClickDice[1].col = 3;
 
-    const newerClickPlaced = placeDie(clickNewerDieGame, newerClickDice[1].id, 0, 1);
-    const newerClickChallenged = challengeViolation(newerClickPlaced, newerClickDice[1].id);
+    const newerClickMoved = moveDie(clickNewerDieGame, newerClickDice[1].id, 0, 1);
+    const newerClickChallenged = challengeViolation(newerClickMoved, newerClickDice[1].id);
 
     expect(newerClickChallenged.dice.find((die) => die.id === newerClickDice[1].id)?.row).toBeNull();
   });
@@ -481,6 +562,10 @@ describe("Disuko rules engine", () => {
       die.row = Math.floor(index / 6);
       die.col = index % 6;
     });
+    [1, 2, 4, 5, 6, 1, 1, 2].forEach((value, index) => {
+      blueDice[index].value = value as (typeof blueDice)[number]["value"];
+    });
+    blueDice[8].value = 3;
 
     const winner = placeDie(game, blueDice[8].id, 1, 2);
 

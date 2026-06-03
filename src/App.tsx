@@ -3,13 +3,12 @@ import {
   useMemo,
   useRef,
   useState,
-  type PointerEvent as ReactPointerEvent,
   type CSSProperties,
+  type PointerEvent as ReactPointerEvent,
   type ReactElement,
   type ReactNode
 } from "react";
 import {
-  boardDiceForPlayer,
   challengeViolation,
   conflictCellKeys,
   conflictDieIds,
@@ -21,13 +20,13 @@ import {
   offBoardDice,
   placeDie,
   recentBoardChangesForCurrentTurn,
-  remainingDiceCount,
   rerollDice,
   restoreGame,
   selectDie,
   serializeGame,
   setSelectedRerollDice,
-  setMode
+  setMode,
+  wouldPlaceDieConflict
 } from "./game/engine";
 import { groupDiceByValue, type DiceValueGroup } from "./game/diceOrdering";
 import type { ActionMode, DiceValue, Die, GameState, Player, PlayerColor } from "./game/types";
@@ -35,6 +34,7 @@ import type { ActionMode, DiceValue, Die, GameState, Player, PlayerColor } from 
 const STORAGE_KEY = "disuko-save-v1";
 const DRAG_THRESHOLD_PX = 8;
 const REROLL_STACK_LONG_PRESS_MS = 450;
+const INVALID_MOVE_ANIMATION_MS = 720;
 const logoUrl = `${import.meta.env.BASE_URL}logo.png`;
 const boardIndexes = Array.from({ length: 36 }, (_, index) => ({
   row: Math.floor(index / 6),
@@ -60,6 +60,28 @@ const pipMap: Record<DiceValue, number[]> = {
   6: [1, 2, 3, 5, 6, 7]
 };
 
+interface InvalidPlacementPreview {
+  id: number;
+  die: Die;
+  startX: number;
+  startY: number;
+  returnX: number;
+  returnY: number;
+}
+
+interface TrackedTurn {
+  seed: string;
+  turnNumber: number;
+  currentPlayerIndex: number;
+}
+
+type DragPointerEvent = {
+  pointerId: number;
+  clientX: number;
+  clientY: number;
+  preventDefault: () => void;
+};
+
 export default function App(): ReactElement {
   const [booting, setBooting] = useState(true);
   const [game, setGame] = useState<GameState | null>(() => loadSavedGame());
@@ -80,8 +102,8 @@ export default function App(): ReactElement {
     window.localStorage.setItem(STORAGE_KEY, serializeGame(game));
   }, [game]);
 
-  const startGame = (playerCount: 2 | 3 | 4, names: string[]) => {
-    setGame(newGame({ playerCount, playerNames: names }));
+  const startGame = (playerCount: 2 | 3 | 4) => {
+    setGame(newGame({ playerCount }));
     setShowSetup(false);
     setShowMenu(false);
   };
@@ -133,13 +155,10 @@ function SetupScreen({
   onStart,
   onCancel
 }: {
-  onStart: (playerCount: 2 | 3 | 4, names: string[]) => void;
+  onStart: (playerCount: 2 | 3 | 4) => void;
   onCancel?: () => void;
 }): ReactElement {
   const [playerCount, setPlayerCount] = useState<2 | 3 | 4>(4);
-  const [names, setNames] = useState(["You", "Maya", "Jordan", "Ava"]);
-
-  const visibleNames = names.slice(0, playerCount);
 
   return (
     <main className="setup-screen">
@@ -164,29 +183,13 @@ function SetupScreen({
           ))}
         </div>
 
-        <div className="name-grid">
-          {visibleNames.map((name, index) => (
-            <label className={`name-field player-${index}`} key={index}>
-              <span>Player {index + 1}</span>
-              <input
-                value={name}
-                onChange={(event) => {
-                  const next = [...names];
-                  next[index] = event.target.value;
-                  setNames(next);
-                }}
-              />
-            </label>
-          ))}
-        </div>
-
         <div className="setup-actions">
           {onCancel ? (
             <button className="secondary-button" type="button" onClick={onCancel}>
               Cancel
             </button>
           ) : null}
-          <button className="primary-button" type="button" onClick={() => onStart(playerCount, names)}>
+          <button className="primary-button" type="button" onClick={() => onStart(playerCount)}>
             Start game
           </button>
         </div>
@@ -208,11 +211,18 @@ function GameScreen({
   onNewGame: () => void;
   children: ReactNode;
 }): ReactElement {
-  const [openRailPlayerId, setOpenRailPlayerId] = useState<string | null>(null);
   const [openRerollValue, setOpenRerollValue] = useState<DiceValue | null>(null);
   const [hasExplicitRerollSelection, setHasExplicitRerollSelection] = useState(false);
   const [dragPreview, setDragPreview] = useState<{ die: Die; x: number; y: number } | null>(null);
-  const railZoneRef = useRef<HTMLDivElement | null>(null);
+  const [invalidPlacement, setInvalidPlacement] = useState<InvalidPlacementPreview | null>(null);
+  const [turnPromptOpen, setTurnPromptOpen] = useState(false);
+  const invalidPlacementId = useRef(0);
+  const invalidPlacementTimer = useRef<number | null>(null);
+  const trackedTurn = useRef<TrackedTurn>({
+    seed: game.seed,
+    turnNumber: game.turnNumber,
+    currentPlayerIndex: game.currentPlayerIndex
+  });
   const dragCandidate = useRef<{
     dieId: string;
     pointerId: number;
@@ -220,6 +230,7 @@ function GameScreen({
     startY: number;
     isDragging: boolean;
   } | null>(null);
+  const clearDragListenersRef = useRef<(() => void) | null>(null);
   const stackLongPress = useRef<{
     pointerId: number;
     value: DiceValue;
@@ -230,7 +241,8 @@ function GameScreen({
   } | null>(null);
   const suppressNextClick = useRef(false);
   const activePlayer = currentPlayer(game);
-  const activeTurnLabel = activePlayer.name.trim().toLowerCase() === "you" ? "Your turn" : `${activePlayer.name}'s turn`;
+  const actionCountLabel = `${game.actionCredits} action${game.actionCredits === 1 ? "" : "s"}`;
+  const activePlayerNumber = game.currentPlayerIndex + 1;
   const conflictDice = useMemo(() => conflictDieIds(game), [game]);
   const conflictCells = useMemo(() => conflictCellKeys(game), [game]);
   const recentMoveHighlights = useMemo(() => {
@@ -252,17 +264,27 @@ function GameScreen({
     () => groupDiceByValue(offBoardDice(game, activePlayer.id)),
     [game, activePlayer.id]
   );
-  const openRailPlayer = openRailPlayerId
-    ? game.players.find((player) => player.id === openRailPlayerId) ?? null
-    : null;
-  const openRailPlayerIndex = openRailPlayerId
-    ? game.players.findIndex((player) => player.id === openRailPlayerId)
-    : -1;
-  const openRailAnchor = openRailPlayerIndex >= 0 ? ((openRailPlayerIndex + 0.5) / game.players.length) * 100 : 50;
-  const openRailGroups = useMemo(
-    () => (openRailPlayerId ? groupDiceByValue(offBoardDice(game, openRailPlayerId)) : []),
-    [game, openRailPlayerId]
-  );
+  const transientDieId = dragPreview?.die.id ?? invalidPlacement?.die.id ?? null;
+
+  const clearInvalidPlacement = () => {
+    if (invalidPlacementTimer.current !== null) {
+      window.clearTimeout(invalidPlacementTimer.current);
+      invalidPlacementTimer.current = null;
+    }
+
+    setInvalidPlacement(null);
+  };
+
+  const clearDragListeners = () => {
+    clearDragListenersRef.current?.();
+    clearDragListenersRef.current = null;
+  };
+
+  const clearDragState = () => {
+    dragCandidate.current = null;
+    setDragPreview(null);
+    clearDragListeners();
+  };
 
   const clearStackLongPress = () => {
     if (!stackLongPress.current) {
@@ -274,10 +296,42 @@ function GameScreen({
   };
 
   useEffect(() => {
-    if (openRailPlayerId && !game.players.some((player) => player.id === openRailPlayerId)) {
-      setOpenRailPlayerId(null);
+    return () => {
+      if (invalidPlacementTimer.current !== null) {
+        window.clearTimeout(invalidPlacementTimer.current);
+      }
+
+      clearDragListeners();
+    };
+  }, []);
+
+  useEffect(() => {
+    const previous = trackedTurn.current;
+    const isDifferentGame = previous.seed !== game.seed;
+    const didAdvanceTurn =
+      !isDifferentGame &&
+      game.phase === "playing" &&
+      (previous.turnNumber !== game.turnNumber || previous.currentPlayerIndex !== game.currentPlayerIndex);
+
+    trackedTurn.current = {
+      seed: game.seed,
+      turnNumber: game.turnNumber,
+      currentPlayerIndex: game.currentPlayerIndex
+    };
+
+    if (isDifferentGame || game.phase !== "playing") {
+      setTurnPromptOpen(false);
+      return;
     }
-  }, [game.players, openRailPlayerId]);
+
+    if (didAdvanceTurn) {
+      clearDragState();
+      setOpenRerollValue(null);
+      setHasExplicitRerollSelection(false);
+      clearStackLongPress();
+      setTurnPromptOpen(true);
+    }
+  }, [game.seed, game.turnNumber, game.currentPlayerIndex, game.phase]);
 
   useEffect(() => {
     if (game.mode !== "reroll") {
@@ -321,46 +375,46 @@ function GameScreen({
     };
   }, [openRerollValue]);
 
-  useEffect(() => {
-    if (!openRailPlayerId) {
-      return;
-    }
-
-    const handlePointerDown = (event: PointerEvent) => {
-      const target = event.target;
-
-      if (target instanceof Node && railZoneRef.current?.contains(target)) {
-        return;
-      }
-
-      setOpenRailPlayerId(null);
-    };
-
-    const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") {
-        setOpenRailPlayerId(null);
-      }
-    };
-
-    document.addEventListener("pointerdown", handlePointerDown);
-    document.addEventListener("keydown", handleKeyDown);
-
-    return () => {
-      document.removeEventListener("pointerdown", handlePointerDown);
-      document.removeEventListener("keydown", handleKeyDown);
-    };
-  }, [openRailPlayerId]);
-
   const commitMode = (mode: ActionMode) => onCommit(setMode(game, mode));
 
   const handleOpenMenu = () => {
-    setOpenRailPlayerId(null);
+    clearInvalidPlacement();
     onOpenMenu();
   };
 
   const handleNewGame = () => {
-    setOpenRailPlayerId(null);
+    clearInvalidPlacement();
     onNewGame();
+  };
+
+  const showInvalidPlacement = (die: Die, row: number, col: number) => {
+    if (invalidPlacementTimer.current !== null) {
+      window.clearTimeout(invalidPlacementTimer.current);
+    }
+
+    const cell = document.querySelector<HTMLElement>(`.board-cell[data-row="${row}"][data-col="${col}"]`);
+    const tray = document.querySelector<HTMLElement>(".dice-tray");
+    const cellRect = cell?.getBoundingClientRect();
+    const trayRect = tray?.getBoundingClientRect();
+    const startX = cellRect ? cellRect.left + cellRect.width / 2 : window.innerWidth / 2;
+    const startY = cellRect ? cellRect.top + cellRect.height / 2 : window.innerHeight / 2;
+    const endX = trayRect ? trayRect.left + trayRect.width / 2 : startX;
+    const endY = trayRect ? trayRect.top + trayRect.height / 2 : startY + window.innerHeight * 0.28;
+    const id = invalidPlacementId.current + 1;
+
+    invalidPlacementId.current = id;
+    setInvalidPlacement({
+      id,
+      die,
+      startX,
+      startY,
+      returnX: endX - startX,
+      returnY: endY - startY
+    });
+    invalidPlacementTimer.current = window.setTimeout(() => {
+      setInvalidPlacement((current) => (current?.id === id ? null : current));
+      invalidPlacementTimer.current = null;
+    }, INVALID_MOVE_ANIMATION_MS);
   };
 
   const selectedCountForGroup = (group: DiceValueGroup) =>
@@ -497,6 +551,12 @@ function GameScreen({
       return;
     }
 
+    if (wouldPlaceDieConflict(game, die.id, row, col)) {
+      showInvalidPlacement(die, row, col);
+      onCommit(placeDie(game, die.id, row, col));
+      return;
+    }
+
     onCommit(placeDie(game, die.id, row, col));
   };
 
@@ -527,7 +587,7 @@ function GameScreen({
       return;
     }
 
-    event.currentTarget.setPointerCapture(event.pointerId);
+    clearDragListeners();
     dragCandidate.current = {
       dieId: die.id,
       pointerId: event.pointerId,
@@ -535,9 +595,28 @@ function GameScreen({
       startY: event.clientY,
       isDragging: false
     };
+
+    const handleDocumentPointerMove = (pointerEvent: PointerEvent) => handleDiePointerMove(pointerEvent);
+    const handleDocumentPointerUp = (pointerEvent: PointerEvent) => handleDiePointerUp(pointerEvent);
+    const handleDocumentPointerCancel = (pointerEvent: PointerEvent) => handleDiePointerCancel(pointerEvent);
+
+    document.addEventListener("pointermove", handleDocumentPointerMove, { passive: false });
+    document.addEventListener("pointerup", handleDocumentPointerUp, { passive: false });
+    document.addEventListener("pointercancel", handleDocumentPointerCancel);
+    clearDragListenersRef.current = () => {
+      document.removeEventListener("pointermove", handleDocumentPointerMove);
+      document.removeEventListener("pointerup", handleDocumentPointerUp);
+      document.removeEventListener("pointercancel", handleDocumentPointerCancel);
+    };
+
+    try {
+      event.currentTarget.setPointerCapture(event.pointerId);
+    } catch {
+      // Document listeners keep the drag alive if the source element cannot capture.
+    }
   };
 
-  const handleDiePointerMove = (event: ReactPointerEvent<HTMLElement>) => {
+  const handleDiePointerMove = (event: DragPointerEvent) => {
     const candidate = dragCandidate.current;
 
     if (!candidate || candidate.pointerId !== event.pointerId) {
@@ -547,6 +626,7 @@ function GameScreen({
     const die = game.dice.find((candidateDie) => candidateDie.id === candidate.dieId);
 
     if (!die) {
+      clearDragState();
       return;
     }
 
@@ -561,7 +641,7 @@ function GameScreen({
     setDragPreview({ die, x: event.clientX, y: event.clientY });
   };
 
-  const handleDiePointerUp = (event: ReactPointerEvent<HTMLElement>) => {
+  const handleDiePointerUp = (event: DragPointerEvent) => {
     const candidate = dragCandidate.current;
 
     if (!candidate || candidate.pointerId !== event.pointerId) {
@@ -569,8 +649,10 @@ function GameScreen({
     }
 
     dragCandidate.current = null;
+    clearDragListeners();
 
     if (!candidate.isDragging) {
+      setDragPreview(null);
       return;
     }
 
@@ -593,13 +675,12 @@ function GameScreen({
     commitDieToCell(die, row, col);
   };
 
-  const handleDiePointerCancel = (event: ReactPointerEvent<HTMLElement>) => {
+  const handleDiePointerCancel = (event: DragPointerEvent) => {
     if (dragCandidate.current?.pointerId !== event.pointerId) {
       return;
     }
 
-    dragCandidate.current = null;
-    setDragPreview(null);
+    clearDragState();
   };
 
   const handleReroll = () => {
@@ -637,34 +718,14 @@ function GameScreen({
         </button>
       </header>
 
-      <div className="player-rail-zone" ref={railZoneRef}>
-        <PlayerStrip
-          game={game}
-          activePlayer={activePlayer}
-          openRailPlayerId={openRailPlayerId}
-          onToggleRail={(playerId) => {
-            setOpenRailPlayerId((currentPlayerId) => (currentPlayerId === playerId ? null : playerId));
-          }}
-        />
-        {openRailPlayer ? (
-          <PlayerDiceRail player={openRailPlayer} groups={openRailGroups} anchorPercent={openRailAnchor} />
-        ) : null}
-      </div>
-
-      <section className="turn-panel" aria-live="polite">
-        <div>
-          <span className={`player-dot dot-${activePlayer.color}`} />
-          <strong>{game.phase === "won" ? "Game over" : activeTurnLabel}</strong>
-        </div>
-        <span>{game.actionCredits} action{game.actionCredits === 1 ? "" : "s"}</span>
-      </section>
+      <OpponentTrayStrip game={game} activePlayer={activePlayer} hiddenDieId={transientDieId} />
 
       <Board
         game={game}
         conflictDice={conflictDice}
         conflictCells={conflictCells}
         recentMoveHighlights={recentMoveHighlights}
-        draggingDieId={dragPreview?.die.id ?? null}
+        draggingDieId={transientDieId}
         onCell={handleCell}
         onDie={handleBoardDie}
         onDiePointerDown={handleDiePointerDown}
@@ -680,8 +741,9 @@ function GameScreen({
             selectedIds={new Set(game.selectedDieIds)}
             player={activePlayer}
             mode={game.mode}
-            draggingDieId={dragPreview?.die.id ?? null}
+            draggingDieId={transientDieId}
             openRerollValue={openRerollValue}
+            actionCountLabel={actionCountLabel}
             rollLabel={game.mode === "reroll" ? "Reroll" : "Roll"}
             rollActive={game.mode === "reroll"}
             onGroup={handleTrayGroup}
@@ -705,47 +767,85 @@ function GameScreen({
         </div>
       ) : null}
 
+      {invalidPlacement ? (
+        <>
+          <div className="invalid-move-toast" role="status" aria-live="assertive">
+            invalid move
+          </div>
+          <div
+            className="invalid-return-preview"
+            style={
+              {
+                left: invalidPlacement.startX,
+                top: invalidPlacement.startY,
+                "--invalid-return-x": `${invalidPlacement.returnX}px`,
+                "--invalid-return-y": `${invalidPlacement.returnY}px`
+              } as CSSProperties
+            }
+            aria-hidden="true"
+          >
+            <DieFace die={invalidPlacement.die} compact />
+          </div>
+        </>
+      ) : null}
+
+      {turnPromptOpen && game.phase === "playing" ? (
+        <TurnStartPrompt player={activePlayer} playerNumber={activePlayerNumber} onPlay={() => setTurnPromptOpen(false)} />
+      ) : null}
+
       {children}
     </main>
   );
 }
 
-function PlayerStrip({
+function TurnStartPrompt({
+  player,
+  playerNumber,
+  onPlay
+}: {
+  player: Player;
+  playerNumber: number;
+  onPlay: () => void;
+}): ReactElement {
+  return (
+    <div className="turn-start-backdrop" role="dialog" aria-modal="true" aria-labelledby="turn-start-title">
+      <section className={`turn-start-card turn-${player.color}`}>
+        <strong id="turn-start-title">Player {playerNumber}'s turn</strong>
+        <button type="button" autoFocus onClick={onPlay}>
+          Play
+        </button>
+      </section>
+    </div>
+  );
+}
+
+function OpponentTrayStrip({
   game,
   activePlayer,
-  openRailPlayerId,
-  onToggleRail
+  hiddenDieId
 }: {
   game: GameState;
   activePlayer: Player;
-  openRailPlayerId: string | null;
-  onToggleRail: (playerId: string) => void;
+  hiddenDieId: string | null;
 }): ReactElement {
+  const opponents = game.players.filter((player) => player.id !== activePlayer.id);
+
   return (
-    <section className="player-strip" aria-label="Players">
-      {game.players.map((player) => {
-        const remaining = remainingDiceCount(game, player.id);
-        const placed = boardDiceForPlayer(game, player.id).length;
-        const isActive = player.id === activePlayer.id && game.phase !== "won";
-        const isWinner = player.id === game.winnerId;
-        const isOpen = player.id === openRailPlayerId;
+    <section className="opponent-tray-zone" aria-label="Other players">
+      {opponents.map((player) => {
+        const playerIndex = game.players.findIndex((candidate) => candidate.id === player.id) + 1;
 
         return (
-          <button
-            aria-controls={isOpen ? "player-dice-rail" : undefined}
-            aria-expanded={isOpen}
-            className={`player-card card-${player.color} ${isActive ? "is-active" : ""} ${
-              isWinner ? "is-winner" : ""
-            } ${isOpen ? "is-open" : ""}`}
-            key={player.id}
-            type="button"
-            onClick={() => onToggleRail(player.id)}
-          >
-            <span className={`player-dot dot-${player.color}`} />
-            <span className="player-name">{player.name}</span>
-            <strong>{remaining}</strong>
-            <small>{placed} placed</small>
-          </button>
+          <article className={`opponent-tray-row opponent-${player.color}`} key={player.id}>
+            <strong>Player {playerIndex}</strong>
+            <DiceRail
+              groups={groupDiceByValue(offBoardDice(game, player.id))}
+              draggingDieId={hiddenDieId}
+              emptyLabel="No dice"
+              readOnly
+              className="opponent-dice-rail"
+            />
+          </article>
         );
       })}
     </section>
@@ -835,6 +935,7 @@ function DiceTray({
   mode,
   draggingDieId,
   openRerollValue,
+  actionCountLabel,
   rollLabel,
   rollActive,
   onGroup,
@@ -855,6 +956,7 @@ function DiceTray({
   mode: ActionMode;
   draggingDieId: string | null;
   openRerollValue: DiceValue | null;
+  actionCountLabel: string;
   rollLabel: string;
   rollActive: boolean;
   onGroup: (group: DiceValueGroup) => void;
@@ -871,6 +973,9 @@ function DiceTray({
 }): ReactElement {
   return (
     <section className="dice-tray" aria-label={`${player.name}'s dice tray`}>
+      <div className="tray-status-row" aria-live="polite">
+        <span>{actionCountLabel}</span>
+      </div>
       <div className="tray-control-row">
         <DiceRail
           groups={groups}
@@ -903,37 +1008,12 @@ function DiceTray({
   );
 }
 
-function PlayerDiceRail({
-  player,
-  groups,
-  anchorPercent
-}: {
-  player: Player;
-  groups: DiceValueGroup[];
-  anchorPercent: number;
-}): ReactElement {
-  return (
-    <section
-      className={`player-dice-popover rail-${player.color}`}
-      id="player-dice-rail"
-      aria-label={`${player.name}'s dice rail`}
-      style={{ "--rail-anchor": `${anchorPercent}%` } as CSSProperties}
-    >
-      <div className="rail-heading">
-        <span className={`player-dot dot-${player.color}`} />
-        <strong>{player.name}</strong>
-        <small>{groups.reduce((total, group) => total + group.count, 0)} remaining</small>
-      </div>
-      <DiceRail groups={groups} emptyLabel="No dice in tray." readOnly />
-    </section>
-  );
-}
-
 function DiceRail({
   groups,
   selectedIds,
   draggingDieId,
   emptyLabel,
+  className,
   readOnly = false,
   rerollMode = false,
   openRerollValue = null,
@@ -952,6 +1032,7 @@ function DiceRail({
   selectedIds?: Set<string>;
   draggingDieId?: string | null;
   emptyLabel: string;
+  className?: string;
   readOnly?: boolean;
   rerollMode?: boolean;
   openRerollValue?: DiceValue | null;
@@ -979,7 +1060,7 @@ function DiceRail({
     .filter((group) => Boolean(group.representativeDie));
 
   return (
-    <div className={`dice-rail-groove ${readOnly ? "is-readonly" : ""}`}>
+    <div className={`dice-rail-groove ${readOnly ? "is-readonly" : ""} ${className ?? ""}`}>
       {visibleGroups.length === 0 ? (
         <p className="empty-tray">{emptyLabel}</p>
       ) : (

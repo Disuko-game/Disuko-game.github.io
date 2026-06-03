@@ -19,8 +19,6 @@ import {
   type Player
 } from "./types";
 
-const DEFAULT_PLAYER_NAMES = ["You", "Maya", "Jordan", "Ava"];
-
 export function diceCountForPlayerCount(playerCount: 2 | 3 | 4): number {
   if (playerCount === 2) {
     return 18;
@@ -39,7 +37,7 @@ export function newGame(options: NewGameOptions): GameState {
   const dicePerPlayer = diceCountForPlayerCount(options.playerCount);
   const players: Player[] = Array.from({ length: options.playerCount }, (_, index) => ({
     id: `p${index + 1}`,
-    name: options.playerNames?.[index]?.trim() || DEFAULT_PLAYER_NAMES[index],
+    name: `Player ${index + 1}`,
     color: PLAYER_COLORS[index]
   }));
   const dice: Die[] = [];
@@ -88,6 +86,24 @@ export function getDieAt(state: GameState, row: number, col: number): Die | unde
 
 export function isOnBoard(die: Die): boolean {
   return die.row !== null && die.col !== null;
+}
+
+export function wouldPlaceDieConflict(state: GameState, dieId: string, row: number, col: number): boolean {
+  const die = state.dice.find((candidate) => candidate.id === dieId);
+
+  if (!die || isOnBoard(die) || !isInBounds(row, col) || getDieAt(state, row, col)) {
+    return false;
+  }
+
+  const targetBox = boxIndex(row, col);
+
+  return state.dice.some((candidate) => {
+    if (candidate.id === die.id || !isOnBoard(candidate) || candidate.value !== die.value) {
+      return false;
+    }
+
+    return candidate.row === row || candidate.col === col || boxIndex(candidate.row as number, candidate.col as number) === targetBox;
+  });
 }
 
 export function setMode(state: GameState, mode: ActionMode): GameState {
@@ -150,6 +166,10 @@ export function placeDie(state: GameState, dieId: string, row: number, col: numb
 
   if (!isInBounds(row, col) || getDieAt(next, row, col)) {
     return withMessage(next, "Choose an empty board space.");
+  }
+
+  if (wouldPlaceDieConflict(next, die.id, row, col)) {
+    return resolveInvalidPlacement(next, die.id, player.id);
   }
 
   die.row = row;
@@ -489,6 +509,31 @@ function resolveAction(
 
   if (state.actionCredits <= 0) {
     return advanceTurn(state, state.message);
+  }
+
+  return state;
+}
+
+function resolveInvalidPlacement(state: GameState, dieId: string, playerId: string): GameState {
+  state.actionCredits = Math.max(0, state.actionCredits - 1);
+  state.selectedDieIds = [];
+  state.challengeRolls = undefined;
+  state.lastAction = {
+    type: "place",
+    playerId,
+    dieId,
+    completedKeys: [],
+    conflictDieIds: []
+  };
+  state.message = "invalid move";
+
+  if (state.actionCredits <= 0) {
+    state.currentPlayerIndex = (state.currentPlayerIndex + 1) % state.players.length;
+    state.turnNumber += 1;
+    state.actionCredits = 1;
+    state.mode = "place";
+    state.selectedDieIds = [];
+    state.message = "invalid move";
   }
 
   return state;
