@@ -13,6 +13,7 @@ export type GamePhase = "playing" | "won";
 export type CompletionKind = "row" | "column" | "box" | "value";
 export type ConflictKind = "row" | "column" | "box";
 export type LastActionType = "place" | "move" | "reroll" | "challenge" | "pass";
+export type BoardChangeType = "place" | "move";
 
 export interface Player {
   id: string;
@@ -56,6 +57,13 @@ export interface LastAction {
   conflictDieIds: string[];
 }
 
+export interface BoardChange {
+  type: BoardChangeType;
+  playerId: string;
+  dieId: string;
+  turnNumber: number;
+}
+
 export interface GameState {
   version: 1;
   seed: string;
@@ -72,6 +80,7 @@ export interface GameState {
   winnerId?: string;
   message: string;
   lastAction?: LastAction;
+  boardChanges: BoardChange[];
   challengeRolls?: ChallengeRoll[];
 }
 

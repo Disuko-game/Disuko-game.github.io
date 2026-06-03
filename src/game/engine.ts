@@ -6,6 +6,8 @@ import {
   DICE_VALUES,
   PLAYER_COLORS,
   type ActionMode,
+  type BoardChange,
+  type BoardChangeType,
   type ChallengeRoll,
   type Completion,
   type Conflict,
@@ -71,6 +73,7 @@ export function newGame(options: NewGameOptions): GameState {
     phase: "playing",
     message: `${players[0].name}, place a die, move a die, or reroll your tray.`,
     lastAction: undefined,
+    boardChanges: [],
     challengeRolls: undefined
   };
 }
@@ -102,7 +105,7 @@ export function selectDie(state: GameState, dieId: string, multi = false): GameS
   const next = cloneState(state);
   const die = next.dice.find((candidate) => candidate.id === dieId);
 
-  if (!die || die.ownerId !== currentPlayer(next).id || next.phase !== "playing") {
+  if (!die || next.phase !== "playing" || (die.ownerId !== currentPlayer(next).id && !isOnBoard(die))) {
     return next;
   }
 
@@ -118,10 +121,24 @@ export function selectDie(state: GameState, dieId: string, multi = false): GameS
   return next;
 }
 
+export function setSelectedRerollDice(state: GameState, dieIds: string[]): GameState {
+  const next = cloneState(state);
+  const player = currentPlayer(next);
+  const requestedIds = new Set(dieIds);
+
+  next.mode = "reroll";
+  next.selectedDieIds = next.dice
+    .filter((die) => requestedIds.has(die.id) && die.ownerId === player.id && !isOnBoard(die))
+    .map((die) => die.id);
+
+  return next;
+}
+
 export function placeDie(state: GameState, dieId: string, row: number, col: number): GameState {
   const next = cloneState(state);
   const player = currentPlayer(next);
   const die = next.dice.find((candidate) => candidate.id === dieId);
+  const previousCompletions = calculateCompletionKeys(next);
 
   if (!canTakeAction(next)) {
     return withMessage(next, "No action is available. End the action to continue.");
@@ -137,20 +154,23 @@ export function placeDie(state: GameState, dieId: string, row: number, col: numb
 
   die.row = row;
   die.col = col;
-  return resolveAction(next, "place", die.id, `${player.name} placed a ${die.value}.`);
+  recordBoardChange(next, "place", die.id, player.id);
+  return resolveAction(next, "place", die.id, `${player.name} placed a ${die.value}.`, previousCompletions);
 }
 
 export function moveDie(state: GameState, dieId: string, row: number, col: number): GameState {
   const next = cloneState(state);
   const player = currentPlayer(next);
   const die = next.dice.find((candidate) => candidate.id === dieId);
+  const owner = next.players.find((candidate) => candidate.id === die?.ownerId);
+  const previousCompletions = calculateCompletionKeys(next);
 
   if (!canTakeAction(next)) {
     return withMessage(next, "No action is available. End the action to continue.");
   }
 
-  if (!die || die.ownerId !== player.id || !isOnBoard(die)) {
-    return withMessage(next, "Select one of your board dice to move.");
+  if (!die || !isOnBoard(die)) {
+    return withMessage(next, "Select a board die to move.");
   }
 
   if (!isInBounds(row, col) || getDieAt(next, row, col)) {
@@ -159,13 +179,23 @@ export function moveDie(state: GameState, dieId: string, row: number, col: numbe
 
   die.row = row;
   die.col = col;
-  return resolveAction(next, "move", die.id, `${player.name} moved a ${die.value}.`);
+  recordBoardChange(next, "move", die.id, player.id);
+  const movedLabel =
+    owner && owner.id !== player.id ? `${player.name} moved ${owner.name}'s ${die.value}.` : `${player.name} moved a ${die.value}.`;
+
+  return resolveAction(next, "move", die.id, movedLabel, previousCompletions);
 }
 
-export function rerollDice(state: GameState, dieIds: string[]): GameState {
+export function rerollDice(
+  state: GameState,
+  dieIds: string[],
+  options: { defaultToAll?: boolean } = {}
+): GameState {
   const next = cloneState(state);
   const player = currentPlayer(next);
-  const requestedIds = dieIds.length > 0 ? dieIds : offBoardDice(next, player.id).map((die) => die.id);
+  const previousCompletions = calculateCompletionKeys(next);
+  const defaultToAll = options.defaultToAll ?? true;
+  const requestedIds = dieIds.length > 0 || !defaultToAll ? dieIds : offBoardDice(next, player.id).map((die) => die.id);
   const diceToRoll = next.dice.filter(
     (die) => requestedIds.includes(die.id) && die.ownerId === player.id && !isOnBoard(die)
   );
@@ -175,7 +205,7 @@ export function rerollDice(state: GameState, dieIds: string[]): GameState {
   }
 
   if (diceToRoll.length === 0) {
-    return withMessage(next, "There are no off-board dice selected to reroll.");
+    return withMessage(next, defaultToAll ? "There are no off-board dice selected to reroll." : "Choose dice to reroll.");
   }
 
   diceToRoll.forEach((die) => {
@@ -184,16 +214,23 @@ export function rerollDice(state: GameState, dieIds: string[]): GameState {
     die.value = rolled.value;
   });
 
-  return resolveAction(next, "reroll", undefined, `${player.name} rerolled ${diceToRoll.length} dice.`);
+  return resolveAction(next, "reroll", undefined, `${player.name} rerolled ${diceToRoll.length} dice.`, previousCompletions);
 }
 
-export function challengeViolation(state: GameState): GameState {
+export function challengeViolation(state: GameState, targetDieId?: string): GameState {
   const next = cloneState(state);
-  const conflicts = detectConflicts(next);
+  const allConflicts = detectConflicts(next);
+  const conflicts = targetDieId
+    ? allConflicts.filter((conflict) => conflict.dieIds.includes(targetDieId))
+    : allConflicts;
   const conflictDieIds = new Set(conflicts.flatMap((conflict) => conflict.dieIds));
 
-  if (conflicts.length === 0) {
+  if (allConflicts.length === 0) {
     return withMessage(next, "No conflicts are on the board right now.");
+  }
+
+  if (conflicts.length === 0) {
+    return withMessage(next, "Select a conflicting die to challenge.");
   }
 
   if (next.lastAction?.dieId && conflictDieIds.has(next.lastAction.dieId)) {
@@ -277,6 +314,27 @@ export function conflictCellKeys(state: GameState): Set<string> {
   return new Set(detectConflicts(state).flatMap((conflict) => conflict.cellKeys));
 }
 
+export function recentBoardChangesForCurrentTurn(state: GameState): BoardChange[] {
+  const previousTurnNumber = state.turnNumber - state.players.length;
+  const currentTurnNumber = state.turnNumber;
+  const boardDieIds = new Set(state.dice.filter(isOnBoard).map((die) => die.id));
+  const latestByDie = new Map<string, BoardChange>();
+
+  (state.boardChanges ?? [])
+    .filter((change) => {
+      return (
+        change.turnNumber > previousTurnNumber &&
+        change.turnNumber < currentTurnNumber &&
+        boardDieIds.has(change.dieId)
+      );
+    })
+    .forEach((change) => {
+      latestByDie.set(change.dieId, change);
+    });
+
+  return [...latestByDie.values()];
+}
+
 export function calculateCompletionKeys(state: GameState): Completion[] {
   const completions: Completion[] = [];
   const occupied = new Set(
@@ -341,7 +399,8 @@ export function restoreGame(serialized: string): GameState {
     selectedDieIds: parsed.selectedDieIds ?? [],
     completedKeys: parsed.completedKeys ?? [],
     phase: parsed.phase ?? "playing",
-    message: parsed.message ?? "Game restored."
+    message: parsed.message ?? "Game restored.",
+    boardChanges: parsed.boardChanges ?? []
   } as GameState;
 }
 
@@ -365,8 +424,19 @@ function cloneState(state: GameState): GameState {
     selectedDieIds: [...state.selectedDieIds],
     completedKeys: [...state.completedKeys],
     lastAction: state.lastAction ? { ...state.lastAction, completedKeys: [...state.lastAction.completedKeys], conflictDieIds: [...state.lastAction.conflictDieIds] } : undefined,
+    boardChanges: (state.boardChanges ?? []).map((change) => ({ ...change })),
     challengeRolls: state.challengeRolls?.map((roll) => ({ ...roll }))
   };
+}
+
+function recordBoardChange(state: GameState, type: BoardChangeType, dieId: string, playerId: string): void {
+  state.boardChanges ??= [];
+  state.boardChanges.push({
+    type,
+    playerId,
+    dieId,
+    turnNumber: state.turnNumber
+  });
 }
 
 function canTakeAction(state: GameState): boolean {
@@ -382,15 +452,16 @@ function resolveAction(
   state: GameState,
   type: LastActionType,
   dieId: string | undefined,
-  baseMessage: string
+  baseMessage: string,
+  previousCompletions: Completion[]
 ): GameState {
   const player = currentPlayer(state);
   const completions = calculateCompletionKeys(state);
-  const completedKeySet = new Set(state.completedKeys);
-  const newCompletions = completions.filter((completion) => !completedKeySet.has(completion.key));
+  const previousCompletionKeySet = new Set(previousCompletions.map((completion) => completion.key));
+  const newCompletions = completions.filter((completion) => !previousCompletionKeySet.has(completion.key));
   const conflicts = detectConflicts(state);
 
-  state.completedKeys = [...state.completedKeys, ...newCompletions.map((completion) => completion.key)];
+  state.completedKeys = [...new Set([...state.completedKeys, ...newCompletions.map((completion) => completion.key)])];
   state.actionCredits = Math.max(0, state.actionCredits - 1 + newCompletions.length);
   state.selectedDieIds = [];
   state.lastAction = {

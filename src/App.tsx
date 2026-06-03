@@ -4,6 +4,7 @@ import {
   useRef,
   useState,
   type PointerEvent as ReactPointerEvent,
+  type CSSProperties,
   type ReactElement,
   type ReactNode
 } from "react";
@@ -13,26 +14,27 @@ import {
   conflictCellKeys,
   conflictDieIds,
   currentPlayer,
-  detectConflicts,
-  endAction,
   getDieAt,
   isOnBoard,
   moveDie,
   newGame,
   offBoardDice,
   placeDie,
+  recentBoardChangesForCurrentTurn,
   remainingDiceCount,
   rerollDice,
   restoreGame,
   selectDie,
   serializeGame,
+  setSelectedRerollDice,
   setMode
 } from "./game/engine";
-import { orderTrayDice } from "./game/diceOrdering";
-import type { ActionMode, DiceValue, Die, GameState, Player } from "./game/types";
+import { groupDiceByValue, type DiceValueGroup } from "./game/diceOrdering";
+import type { ActionMode, DiceValue, Die, GameState, Player, PlayerColor } from "./game/types";
 
 const STORAGE_KEY = "disuko-save-v1";
 const DRAG_THRESHOLD_PX = 8;
+const REROLL_STACK_LONG_PRESS_MS = 450;
 const logoUrl = `${import.meta.env.BASE_URL}logo.png`;
 const boardIndexes = Array.from({ length: 36 }, (_, index) => ({
   row: Math.floor(index / 6),
@@ -206,7 +208,11 @@ function GameScreen({
   onNewGame: () => void;
   children: ReactNode;
 }): ReactElement {
+  const [openRailPlayerId, setOpenRailPlayerId] = useState<string | null>(null);
+  const [openRerollValue, setOpenRerollValue] = useState<DiceValue | null>(null);
+  const [hasExplicitRerollSelection, setHasExplicitRerollSelection] = useState(false);
   const [dragPreview, setDragPreview] = useState<{ die: Die; x: number; y: number } | null>(null);
+  const railZoneRef = useRef<HTMLDivElement | null>(null);
   const dragCandidate = useRef<{
     dieId: string;
     pointerId: number;
@@ -214,32 +220,251 @@ function GameScreen({
     startY: number;
     isDragging: boolean;
   } | null>(null);
+  const stackLongPress = useRef<{
+    pointerId: number;
+    value: DiceValue;
+    startX: number;
+    startY: number;
+    timer: number;
+    fired: boolean;
+  } | null>(null);
   const suppressNextClick = useRef(false);
   const activePlayer = currentPlayer(game);
   const activeTurnLabel = activePlayer.name.trim().toLowerCase() === "you" ? "Your turn" : `${activePlayer.name}'s turn`;
-  const conflicts = useMemo(() => detectConflicts(game), [game]);
   const conflictDice = useMemo(() => conflictDieIds(game), [game]);
   const conflictCells = useMemo(() => conflictCellKeys(game), [game]);
+  const recentMoveHighlights = useMemo(() => {
+    const playerColors = new Map(game.players.map((player) => [player.id, player.color]));
+    const highlights = new Map<string, PlayerColor>();
+
+    recentBoardChangesForCurrentTurn(game).forEach((change) => {
+      const color = playerColors.get(change.playerId);
+
+      if (color) {
+        highlights.set(change.dieId, color);
+      }
+    });
+
+    return highlights;
+  }, [game]);
   const selectedDie = game.dice.find((die) => game.selectedDieIds.includes(die.id));
-  const currentTrayDice = useMemo(
-    () => orderTrayDice(offBoardDice(game, activePlayer.id)),
+  const currentTrayGroups = useMemo(
+    () => groupDiceByValue(offBoardDice(game, activePlayer.id)),
     [game, activePlayer.id]
   );
+  const openRailPlayer = openRailPlayerId
+    ? game.players.find((player) => player.id === openRailPlayerId) ?? null
+    : null;
+  const openRailPlayerIndex = openRailPlayerId
+    ? game.players.findIndex((player) => player.id === openRailPlayerId)
+    : -1;
+  const openRailAnchor = openRailPlayerIndex >= 0 ? ((openRailPlayerIndex + 0.5) / game.players.length) * 100 : 50;
+  const openRailGroups = useMemo(
+    () => (openRailPlayerId ? groupDiceByValue(offBoardDice(game, openRailPlayerId)) : []),
+    [game, openRailPlayerId]
+  );
+
+  const clearStackLongPress = () => {
+    if (!stackLongPress.current) {
+      return;
+    }
+
+    window.clearTimeout(stackLongPress.current.timer);
+    stackLongPress.current = null;
+  };
+
+  useEffect(() => {
+    if (openRailPlayerId && !game.players.some((player) => player.id === openRailPlayerId)) {
+      setOpenRailPlayerId(null);
+    }
+  }, [game.players, openRailPlayerId]);
+
+  useEffect(() => {
+    if (game.mode !== "reroll") {
+      setOpenRerollValue(null);
+      setHasExplicitRerollSelection(false);
+      clearStackLongPress();
+    }
+  }, [game.mode]);
+
+  useEffect(() => {
+    setOpenRerollValue(null);
+    setHasExplicitRerollSelection(false);
+    clearStackLongPress();
+  }, [activePlayer.id]);
+
+  useEffect(() => {
+    if (openRerollValue && !currentTrayGroups.some((group) => group.value === openRerollValue)) {
+      setOpenRerollValue(null);
+    }
+  }, [currentTrayGroups, openRerollValue]);
+
+  useEffect(() => {
+    if (!openRerollValue) {
+      return;
+    }
+
+    const handlePointerDown = (event: PointerEvent) => {
+      const target = event.target;
+
+      if (target instanceof Element && target.closest(".dice-tray")) {
+        return;
+      }
+
+      setOpenRerollValue(null);
+    };
+
+    document.addEventListener("pointerdown", handlePointerDown);
+
+    return () => {
+      document.removeEventListener("pointerdown", handlePointerDown);
+    };
+  }, [openRerollValue]);
+
+  useEffect(() => {
+    if (!openRailPlayerId) {
+      return;
+    }
+
+    const handlePointerDown = (event: PointerEvent) => {
+      const target = event.target;
+
+      if (target instanceof Node && railZoneRef.current?.contains(target)) {
+        return;
+      }
+
+      setOpenRailPlayerId(null);
+    };
+
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        setOpenRailPlayerId(null);
+      }
+    };
+
+    document.addEventListener("pointerdown", handlePointerDown);
+    document.addEventListener("keydown", handleKeyDown);
+
+    return () => {
+      document.removeEventListener("pointerdown", handlePointerDown);
+      document.removeEventListener("keydown", handleKeyDown);
+    };
+  }, [openRailPlayerId]);
 
   const commitMode = (mode: ActionMode) => onCommit(setMode(game, mode));
 
-  const handleTrayDie = (die: Die) => {
+  const handleOpenMenu = () => {
+    setOpenRailPlayerId(null);
+    onOpenMenu();
+  };
+
+  const handleNewGame = () => {
+    setOpenRailPlayerId(null);
+    onNewGame();
+  };
+
+  const selectedCountForGroup = (group: DiceValueGroup) =>
+    group.dice.filter((die) => game.selectedDieIds.includes(die.id)).length;
+
+  const setRerollStackCount = (group: DiceValueGroup, count: number) => {
+    const nextCount = Math.max(0, Math.min(group.count, count));
+    const selectedIds = new Set(game.selectedDieIds);
+
+    group.dice.forEach((die) => selectedIds.delete(die.id));
+    group.dice.slice(0, nextCount).forEach((die) => selectedIds.add(die.id));
+
+    setHasExplicitRerollSelection(true);
+    onCommit(setSelectedRerollDice(game, [...selectedIds]));
+  };
+
+  const handleTrayGroup = (group: DiceValueGroup) => {
     if (suppressNextClick.current) {
       suppressNextClick.current = false;
       return;
     }
 
     if (game.mode === "reroll") {
-      onCommit(selectDie(game, die.id, true));
+      if (group.count === 1) {
+        setRerollStackCount(group, selectedCountForGroup(group) === 1 ? 0 : 1);
+        setOpenRerollValue(null);
+        return;
+      }
+
+      setOpenRerollValue((value) => (value === group.value ? null : group.value));
       return;
     }
 
-    onCommit(selectDie(setMode(game, "place"), die.id));
+    onCommit(selectDie(setMode(game, "place"), group.representativeDie.id));
+  };
+
+  const handleRerollStackPointerDown = (event: ReactPointerEvent<HTMLElement>, group: DiceValueGroup) => {
+    if (game.mode !== "reroll" || game.phase === "won") {
+      return;
+    }
+
+    clearStackLongPress();
+    event.currentTarget.setPointerCapture(event.pointerId);
+    stackLongPress.current = {
+      pointerId: event.pointerId,
+      value: group.value,
+      startX: event.clientX,
+      startY: event.clientY,
+      timer: window.setTimeout(() => {
+        const current = stackLongPress.current;
+
+        if (!current || current.pointerId !== event.pointerId || current.value !== group.value) {
+          return;
+        }
+
+        current.fired = true;
+        suppressNextClick.current = true;
+        setRerollStackCount(group, group.count);
+        setOpenRerollValue(null);
+        window.setTimeout(() => {
+          suppressNextClick.current = false;
+        }, 0);
+      }, REROLL_STACK_LONG_PRESS_MS),
+      fired: false
+    };
+  };
+
+  const handleRerollStackPointerMove = (event: ReactPointerEvent<HTMLElement>) => {
+    const current = stackLongPress.current;
+
+    if (!current || current.pointerId !== event.pointerId) {
+      return;
+    }
+
+    const distance = Math.hypot(event.clientX - current.startX, event.clientY - current.startY);
+
+    if (distance >= DRAG_THRESHOLD_PX) {
+      clearStackLongPress();
+    }
+  };
+
+  const handleRerollStackPointerUp = (event: ReactPointerEvent<HTMLElement>) => {
+    const current = stackLongPress.current;
+
+    if (!current || current.pointerId !== event.pointerId) {
+      return;
+    }
+
+    const fired = current.fired;
+    clearStackLongPress();
+
+    if (fired) {
+      event.preventDefault();
+      suppressNextClick.current = true;
+      window.setTimeout(() => {
+        suppressNextClick.current = false;
+      }, 0);
+    }
+  };
+
+  const handleRerollStackPointerCancel = (event: ReactPointerEvent<HTMLElement>) => {
+    if (stackLongPress.current?.pointerId === event.pointerId) {
+      clearStackLongPress();
+    }
   };
 
   const handleBoardDie = (die: Die) => {
@@ -248,7 +473,12 @@ function GameScreen({
       return;
     }
 
-    if (die.ownerId !== activePlayer.id || game.phase === "won") {
+    if (game.phase === "won") {
+      return;
+    }
+
+    if (conflictDice.has(die.id)) {
+      onCommit(challengeViolation(game, die.id));
       return;
     }
 
@@ -293,7 +523,7 @@ function GameScreen({
   };
 
   const handleDiePointerDown = (event: ReactPointerEvent<HTMLElement>, die: Die) => {
-    if (die.ownerId !== activePlayer.id || game.phase === "won") {
+    if (game.phase === "won") {
       return;
     }
 
@@ -374,28 +604,52 @@ function GameScreen({
 
   const handleReroll = () => {
     if (game.mode !== "reroll") {
+      setOpenRerollValue(null);
+      setHasExplicitRerollSelection(false);
+      clearStackLongPress();
       commitMode("reroll");
       return;
     }
 
-    onCommit(rerollDice(game, game.selectedDieIds));
+    setOpenRerollValue(null);
+    clearStackLongPress();
+
+    if (hasExplicitRerollSelection && game.selectedDieIds.length === 0) {
+      onCommit(rerollDice(game, [], { defaultToAll: false }));
+      return;
+    }
+
+    onCommit(rerollDice(game, game.selectedDieIds, { defaultToAll: !hasExplicitRerollSelection }));
+    setHasExplicitRerollSelection(false);
   };
 
   return (
     <main className="game-shell">
       <header className="game-header">
-        <button className="round-icon" type="button" aria-label="Open menu" onClick={onOpenMenu}>
+        <button className="round-icon" type="button" aria-label="Open menu" onClick={handleOpenMenu}>
           <span />
           <span />
           <span />
         </button>
         <img className="game-logo" src={logoUrl} alt="Disuko" />
-        <button className="new-game-chip" type="button" onClick={onNewGame}>
+        <button className="new-game-chip" type="button" onClick={handleNewGame}>
           New
         </button>
       </header>
 
-      <PlayerStrip game={game} activePlayer={activePlayer} />
+      <div className="player-rail-zone" ref={railZoneRef}>
+        <PlayerStrip
+          game={game}
+          activePlayer={activePlayer}
+          openRailPlayerId={openRailPlayerId}
+          onToggleRail={(playerId) => {
+            setOpenRailPlayerId((currentPlayerId) => (currentPlayerId === playerId ? null : playerId));
+          }}
+        />
+        {openRailPlayer ? (
+          <PlayerDiceRail player={openRailPlayer} groups={openRailGroups} anchorPercent={openRailAnchor} />
+        ) : null}
+      </div>
 
       <section className="turn-panel" aria-live="polite">
         <div>
@@ -409,6 +663,7 @@ function GameScreen({
         game={game}
         conflictDice={conflictDice}
         conflictCells={conflictCells}
+        recentMoveHighlights={recentMoveHighlights}
         draggingDieId={dragPreview?.die.id ?? null}
         onCell={handleCell}
         onDie={handleBoardDie}
@@ -419,41 +674,28 @@ function GameScreen({
       />
 
       <div className="side-stack">
-        <StatusBanner game={game} conflicts={conflicts.length} />
-
         <section className="control-dock" aria-label="Game controls">
           <DiceTray
-            dice={currentTrayDice}
+            groups={currentTrayGroups}
             selectedIds={new Set(game.selectedDieIds)}
             player={activePlayer}
             mode={game.mode}
             draggingDieId={dragPreview?.die.id ?? null}
-            onDie={handleTrayDie}
+            openRerollValue={openRerollValue}
+            rollLabel={game.mode === "reroll" ? "Reroll" : "Roll"}
+            rollActive={game.mode === "reroll"}
+            onGroup={handleTrayGroup}
+            onRoll={handleReroll}
+            onSetRerollCount={setRerollStackCount}
+            onRerollStackPointerDown={handleRerollStackPointerDown}
+            onRerollStackPointerMove={handleRerollStackPointerMove}
+            onRerollStackPointerUp={handleRerollStackPointerUp}
+            onRerollStackPointerCancel={handleRerollStackPointerCancel}
             onDiePointerDown={handleDiePointerDown}
             onDiePointerMove={handleDiePointerMove}
             onDiePointerUp={handleDiePointerUp}
             onDiePointerCancel={handleDiePointerCancel}
           />
-
-          <div className="action-grid">
-            <ActionButton
-              color="blue"
-              icon={<MiniDieIcon />}
-              label={game.mode === "reroll" ? "Reroll" : "Roll"}
-              active={game.mode === "reroll"}
-              onClick={handleReroll}
-            />
-            <ActionButton
-              color="red"
-              icon={<ChallengeIcon />}
-              label="Challenge"
-              active={game.mode === "challenge"}
-              onClick={() => onCommit(challengeViolation(game))}
-            />
-            <button className="end-action-button" type="button" onClick={() => onCommit(endAction(game))}>
-              End Action
-            </button>
-          </div>
         </section>
       </div>
 
@@ -468,7 +710,17 @@ function GameScreen({
   );
 }
 
-function PlayerStrip({ game, activePlayer }: { game: GameState; activePlayer: Player }): ReactElement {
+function PlayerStrip({
+  game,
+  activePlayer,
+  openRailPlayerId,
+  onToggleRail
+}: {
+  game: GameState;
+  activePlayer: Player;
+  openRailPlayerId: string | null;
+  onToggleRail: (playerId: string) => void;
+}): ReactElement {
   return (
     <section className="player-strip" aria-label="Players">
       {game.players.map((player) => {
@@ -476,19 +728,24 @@ function PlayerStrip({ game, activePlayer }: { game: GameState; activePlayer: Pl
         const placed = boardDiceForPlayer(game, player.id).length;
         const isActive = player.id === activePlayer.id && game.phase !== "won";
         const isWinner = player.id === game.winnerId;
+        const isOpen = player.id === openRailPlayerId;
 
         return (
-          <article
+          <button
+            aria-controls={isOpen ? "player-dice-rail" : undefined}
+            aria-expanded={isOpen}
             className={`player-card card-${player.color} ${isActive ? "is-active" : ""} ${
               isWinner ? "is-winner" : ""
-            }`}
+            } ${isOpen ? "is-open" : ""}`}
             key={player.id}
+            type="button"
+            onClick={() => onToggleRail(player.id)}
           >
             <span className={`player-dot dot-${player.color}`} />
             <span className="player-name">{player.name}</span>
             <strong>{remaining}</strong>
             <small>{placed} placed</small>
-          </article>
+          </button>
         );
       })}
     </section>
@@ -499,6 +756,7 @@ function Board({
   game,
   conflictDice,
   conflictCells,
+  recentMoveHighlights,
   draggingDieId,
   onCell,
   onDie,
@@ -510,6 +768,7 @@ function Board({
   game: GameState;
   conflictDice: Set<string>;
   conflictCells: Set<string>;
+  recentMoveHighlights: Map<string, PlayerColor>;
   draggingDieId: string | null;
   onCell: (row: number, col: number) => void;
   onDie: (die: Die) => void;
@@ -523,6 +782,7 @@ function Board({
       <div className="board-grid" role="grid" aria-label="6 by 6 Disuko board">
         {boardIndexes.map(({ row, col }) => {
           const die = getDieAt(game, row, col);
+          const recentMoveColor = die ? recentMoveHighlights.get(die.id) : undefined;
           const key = `${row}:${col}`;
           const cellClasses = [
             "board-cell",
@@ -551,6 +811,7 @@ function Board({
                   die={die}
                   selected={game.selectedDieIds.includes(die.id)}
                   conflicted={conflictDice.has(die.id)}
+                  recentMoveColor={recentMoveColor}
                   draggingSource={draggingDieId === die.id}
                   onClick={() => onDie(die)}
                   onPointerDown={(event) => onDiePointerDown(event, die)}
@@ -568,23 +829,41 @@ function Board({
 }
 
 function DiceTray({
-  dice,
+  groups,
   selectedIds,
   player,
   mode,
   draggingDieId,
-  onDie,
+  openRerollValue,
+  rollLabel,
+  rollActive,
+  onGroup,
+  onRoll,
+  onSetRerollCount,
+  onRerollStackPointerDown,
+  onRerollStackPointerMove,
+  onRerollStackPointerUp,
+  onRerollStackPointerCancel,
   onDiePointerDown,
   onDiePointerMove,
   onDiePointerUp,
   onDiePointerCancel
 }: {
-  dice: Die[];
+  groups: DiceValueGroup[];
   selectedIds: Set<string>;
   player: Player;
   mode: ActionMode;
   draggingDieId: string | null;
-  onDie: (die: Die) => void;
+  openRerollValue: DiceValue | null;
+  rollLabel: string;
+  rollActive: boolean;
+  onGroup: (group: DiceValueGroup) => void;
+  onRoll: () => void;
+  onSetRerollCount: (group: DiceValueGroup, count: number) => void;
+  onRerollStackPointerDown: (event: ReactPointerEvent<HTMLElement>, group: DiceValueGroup) => void;
+  onRerollStackPointerMove: (event: ReactPointerEvent<HTMLElement>) => void;
+  onRerollStackPointerUp: (event: ReactPointerEvent<HTMLElement>) => void;
+  onRerollStackPointerCancel: (event: ReactPointerEvent<HTMLElement>) => void;
   onDiePointerDown: (event: ReactPointerEvent<HTMLElement>, die: Die) => void;
   onDiePointerMove: (event: ReactPointerEvent<HTMLElement>) => void;
   onDiePointerUp: (event: ReactPointerEvent<HTMLElement>) => void;
@@ -592,46 +871,206 @@ function DiceTray({
 }): ReactElement {
   return (
     <section className="dice-tray" aria-label={`${player.name}'s dice tray`}>
-      <div className="tray-heading">
-        <span className={`player-dot dot-${player.color}`} />
-        <strong>{mode === "reroll" ? "Tap dice to reroll" : "Dice tray"}</strong>
-      </div>
-      <div className="tray-scroll">
-        {dice.length === 0 ? (
-          <p className="empty-tray">All dice are on the board.</p>
-        ) : (
-          dice.map((die) => (
-            <button
-              className={`tray-die ${selectedIds.has(die.id) ? "is-selected" : ""} ${
-                draggingDieId === die.id ? "is-dragging-source" : ""
-              }`}
-              key={die.id}
-              type="button"
-              onClick={() => onDie(die)}
-              onPointerDown={(event) => onDiePointerDown(event, die)}
-              onPointerMove={onDiePointerMove}
-              onPointerUp={onDiePointerUp}
-              onPointerCancel={onDiePointerCancel}
-            >
-              <DieFace die={die} selected={selectedIds.has(die.id)} draggingSource={draggingDieId === die.id} compact />
-            </button>
-          ))
-        )}
+      <div className="tray-control-row">
+        <DiceRail
+          groups={groups}
+          selectedIds={selectedIds}
+          draggingDieId={draggingDieId}
+          emptyLabel="All dice are on the board."
+          rerollMode={mode === "reroll"}
+          openRerollValue={openRerollValue}
+          onGroup={onGroup}
+          onSetRerollCount={onSetRerollCount}
+          onRerollStackPointerDown={onRerollStackPointerDown}
+          onRerollStackPointerMove={onRerollStackPointerMove}
+          onRerollStackPointerUp={onRerollStackPointerUp}
+          onRerollStackPointerCancel={onRerollStackPointerCancel}
+          onDiePointerDown={onDiePointerDown}
+          onDiePointerMove={onDiePointerMove}
+          onDiePointerUp={onDiePointerUp}
+          onDiePointerCancel={onDiePointerCancel}
+        />
+        <ActionButton
+          color="blue"
+          icon={<MiniDieIcon />}
+          label={rollLabel}
+          active={rollActive}
+          className="tray-roll-button"
+          onClick={onRoll}
+        />
       </div>
     </section>
   );
 }
 
-function StatusBanner({ game, conflicts }: { game: GameState; conflicts: number }): ReactElement {
-  const rolls = game.challengeRolls
-    ?.map((roll) => `${game.players.find((player) => player.id === roll.playerId)?.name ?? "Player"} ${roll.value}`)
-    .join(" vs ");
+function PlayerDiceRail({
+  player,
+  groups,
+  anchorPercent
+}: {
+  player: Player;
+  groups: DiceValueGroup[];
+  anchorPercent: number;
+}): ReactElement {
+  return (
+    <section
+      className={`player-dice-popover rail-${player.color}`}
+      id="player-dice-rail"
+      aria-label={`${player.name}'s dice rail`}
+      style={{ "--rail-anchor": `${anchorPercent}%` } as CSSProperties}
+    >
+      <div className="rail-heading">
+        <span className={`player-dot dot-${player.color}`} />
+        <strong>{player.name}</strong>
+        <small>{groups.reduce((total, group) => total + group.count, 0)} remaining</small>
+      </div>
+      <DiceRail groups={groups} emptyLabel="No dice in tray." readOnly />
+    </section>
+  );
+}
+
+function DiceRail({
+  groups,
+  selectedIds,
+  draggingDieId,
+  emptyLabel,
+  readOnly = false,
+  rerollMode = false,
+  openRerollValue = null,
+  onGroup,
+  onSetRerollCount,
+  onRerollStackPointerDown,
+  onRerollStackPointerMove,
+  onRerollStackPointerUp,
+  onRerollStackPointerCancel,
+  onDiePointerDown,
+  onDiePointerMove,
+  onDiePointerUp,
+  onDiePointerCancel
+}: {
+  groups: DiceValueGroup[];
+  selectedIds?: Set<string>;
+  draggingDieId?: string | null;
+  emptyLabel: string;
+  readOnly?: boolean;
+  rerollMode?: boolean;
+  openRerollValue?: DiceValue | null;
+  onGroup?: (group: DiceValueGroup) => void;
+  onSetRerollCount?: (group: DiceValueGroup, count: number) => void;
+  onRerollStackPointerDown?: (event: ReactPointerEvent<HTMLElement>, group: DiceValueGroup) => void;
+  onRerollStackPointerMove?: (event: ReactPointerEvent<HTMLElement>) => void;
+  onRerollStackPointerUp?: (event: ReactPointerEvent<HTMLElement>) => void;
+  onRerollStackPointerCancel?: (event: ReactPointerEvent<HTMLElement>) => void;
+  onDiePointerDown?: (event: ReactPointerEvent<HTMLElement>, die: Die) => void;
+  onDiePointerMove?: (event: ReactPointerEvent<HTMLElement>) => void;
+  onDiePointerUp?: (event: ReactPointerEvent<HTMLElement>) => void;
+  onDiePointerCancel?: (event: ReactPointerEvent<HTMLElement>) => void;
+}): ReactElement {
+  const visibleGroups = groups
+    .map((group) => {
+      const visibleDice = draggingDieId ? group.dice.filter((die) => die.id !== draggingDieId) : group.dice;
+
+      return {
+        group,
+        dice: visibleDice,
+        representativeDie: visibleDice[0]
+      };
+    })
+    .filter((group) => Boolean(group.representativeDie));
 
   return (
-    <section className={`status-banner ${conflicts > 0 ? "has-conflict" : ""}`} aria-live="polite">
-      <p>{game.message}</p>
-      {rolls ? <small>Challenge roll: {rolls}</small> : null}
-    </section>
+    <div className={`dice-rail-groove ${readOnly ? "is-readonly" : ""}`}>
+      {visibleGroups.length === 0 ? (
+        <p className="empty-tray">{emptyLabel}</p>
+      ) : (
+        visibleGroups.map(({ group, dice, representativeDie }) => {
+          const selectedCount = group.dice.filter((die) => selectedIds?.has(die.id)).length;
+          const selected = selectedCount > 0;
+          const displayCount = rerollMode ? group.count : dice.length;
+          const multiplier =
+            rerollMode && selectedCount > 0 && selectedCount < group.count
+              ? `${selectedCount}/${group.count}`
+              : displayCount > 1
+                ? displayCount
+                : undefined;
+
+          if (readOnly || !onGroup || !onDiePointerDown || !onDiePointerMove || !onDiePointerUp || !onDiePointerCancel) {
+            return (
+              <span className="rail-die is-readonly" key={group.value}>
+                <DieFace die={representativeDie} selected={selected} compact multiplier={multiplier} />
+              </span>
+            );
+          }
+
+          return (
+            <span className={`rail-stack ${openRerollValue === group.value ? "has-picker" : ""}`} key={group.value}>
+              <button
+                aria-label={
+                  rerollMode
+                    ? `${group.value}, ${selectedCount} of ${group.count} selected to reroll`
+                    : `${group.value}`
+                }
+                className={`rail-die ${selected ? "is-selected" : ""}`}
+                type="button"
+                onClick={() => onGroup(group)}
+                onPointerDown={(event) =>
+                  rerollMode && onRerollStackPointerDown
+                    ? onRerollStackPointerDown(event, group)
+                    : onDiePointerDown(event, representativeDie)
+                }
+                onPointerMove={rerollMode && onRerollStackPointerMove ? onRerollStackPointerMove : onDiePointerMove}
+                onPointerUp={rerollMode && onRerollStackPointerUp ? onRerollStackPointerUp : onDiePointerUp}
+                onPointerCancel={
+                  rerollMode && onRerollStackPointerCancel ? onRerollStackPointerCancel : onDiePointerCancel
+                }
+                onPointerLeave={rerollMode && onRerollStackPointerCancel ? onRerollStackPointerCancel : undefined}
+              >
+                <DieFace die={representativeDie} selected={selected} compact multiplier={multiplier} />
+              </button>
+              {rerollMode && openRerollValue === group.value && onSetRerollCount ? (
+                <StackRerollPicker group={group} selectedCount={selectedCount} onSetCount={onSetRerollCount} />
+              ) : null}
+            </span>
+          );
+        })
+      )}
+    </div>
+  );
+}
+
+function StackRerollPicker({
+  group,
+  selectedCount,
+  onSetCount
+}: {
+  group: DiceValueGroup;
+  selectedCount: number;
+  onSetCount: (group: DiceValueGroup, count: number) => void;
+}): ReactElement {
+  return (
+    <div
+      className="stack-reroll-picker"
+      role="group"
+      aria-label={`Choose how many ${group.value}s to reroll`}
+      onPointerDown={(event) => event.stopPropagation()}
+      onClick={(event) => event.stopPropagation()}
+    >
+      <button type="button" aria-label="Select fewer dice" onClick={() => onSetCount(group, selectedCount - 1)}>
+        -
+      </button>
+      <strong>
+        {selectedCount}/{group.count}
+      </strong>
+      <button type="button" aria-label="Select more dice" onClick={() => onSetCount(group, selectedCount + 1)}>
+        +
+      </button>
+      <button type="button" onClick={() => onSetCount(group, group.count)}>
+        All
+      </button>
+      <button type="button" onClick={() => onSetCount(group, 0)}>
+        Clear
+      </button>
+    </div>
   );
 }
 
@@ -679,16 +1118,22 @@ function ActionButton({
   icon,
   label,
   active,
+  className,
   onClick
 }: {
   color: "blue" | "green" | "gold" | "red";
   icon: ReactNode;
   label: string;
   active?: boolean;
+  className?: string;
   onClick: () => void;
 }): ReactElement {
   return (
-    <button className={`action-button action-${color} ${active ? "is-active" : ""}`} type="button" onClick={onClick}>
+    <button
+      className={`action-button action-${color} ${active ? "is-active" : ""} ${className ?? ""}`}
+      type="button"
+      onClick={onClick}
+    >
       <span className="action-icon" aria-hidden="true">
         {icon}
       </span>
@@ -701,8 +1146,10 @@ function DieFace({
   die,
   selected = false,
   conflicted = false,
+  recentMoveColor,
   draggingSource = false,
   compact = false,
+  multiplier,
   onClick,
   onPointerDown,
   onPointerMove,
@@ -712,8 +1159,10 @@ function DieFace({
   die: Die;
   selected?: boolean;
   conflicted?: boolean;
+  recentMoveColor?: PlayerColor;
   draggingSource?: boolean;
   compact?: boolean;
+  multiplier?: number | string;
   onClick?: () => void;
   onPointerDown?: (event: ReactPointerEvent<HTMLElement>) => void;
   onPointerMove?: (event: ReactPointerEvent<HTMLElement>) => void;
@@ -725,7 +1174,9 @@ function DieFace({
       aria-label={`${die.value}`}
       className={`die-face die-${die.ownerId} ${selected ? "is-selected" : ""} ${
         conflicted ? "is-conflicted" : ""
-      } ${draggingSource ? "is-dragging-source" : ""} ${compact ? "is-compact" : ""}`}
+      } ${recentMoveColor ? `is-recent-move recent-${recentMoveColor}` : ""} ${
+        draggingSource ? "is-dragging-source" : ""
+      } ${compact ? "is-compact" : ""}`}
       onClick={(event) => {
         if (!onClick) {
           return;
@@ -751,6 +1202,9 @@ function DieFace({
           }}
         />
       ))}
+      {multiplier ? (
+        <span className="die-multiplier">{typeof multiplier === "number" ? `${multiplier}x` : multiplier}</span>
+      ) : null}
     </span>
   );
 }
@@ -763,16 +1217,6 @@ function MiniDieIcon(): ReactElement {
       <span />
       <span />
     </span>
-  );
-}
-
-function ChallengeIcon(): ReactElement {
-  return (
-    <svg viewBox="0 0 24 24" aria-hidden="true">
-      <path d="M12 4v9" />
-      <path d="M12 18h.01" />
-      <circle cx="12" cy="12" r="9" />
-    </svg>
   );
 }
 

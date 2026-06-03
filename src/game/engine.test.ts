@@ -9,9 +9,12 @@ import {
   moveDie,
   newGame,
   placeDie,
+  recentBoardChangesForCurrentTurn,
   remainingDiceCount,
   rerollDice,
   restoreGame,
+  selectDie,
+  setSelectedRerollDice,
   serializeGame
 } from "./engine";
 import { boxIndex, cellsForBox } from "./geometry";
@@ -120,6 +123,83 @@ describe("Disuko rules engine", () => {
     expect(afterValue.actionCredits).toBe(1);
   });
 
+  it("stacks combo actions when one placement completes a row and column", () => {
+    const game = newGame({ playerCount: 2, seed: "stacked-place-combo" });
+    const blueDice = game.dice.filter((die) => die.ownerId === "p1");
+
+    blueDice.slice(0, 5).forEach((die, index) => {
+      die.value = ((index % 5) + 1) as typeof die.value;
+      die.row = 0;
+      die.col = index;
+    });
+    blueDice.slice(5, 10).forEach((die, index) => {
+      die.value = ((index % 5) + 1) as typeof die.value;
+      die.row = index + 1;
+      die.col = 5;
+    });
+    blueDice[10].value = 6;
+    game.completedKeys = calculateCompletionKeys(game).map((completion) => completion.key);
+
+    const next = placeDie(game, blueDice[10].id, 0, 5);
+
+    expect(next.currentPlayerIndex).toBe(0);
+    expect(next.actionCredits).toBe(2);
+    expect(next.lastAction?.completedKeys).toEqual(["row:0", "column:5"]);
+    expect(next.completedKeys).toContain("row:0");
+    expect(next.completedKeys).toContain("column:5");
+  });
+
+  it("stacks combo actions when one placement completes a row, column, and box", () => {
+    const game = newGame({ playerCount: 2, seed: "triple-place-combo" });
+    const blueDice = game.dice.filter((die) => die.ownerId === "p1");
+    const setupCells = [
+      { row: 0, col: 0 },
+      { row: 0, col: 1 },
+      { row: 1, col: 0 },
+      { row: 1, col: 1 },
+      { row: 2, col: 0 },
+      { row: 2, col: 2 },
+      { row: 2, col: 3 },
+      { row: 2, col: 4 },
+      { row: 2, col: 5 },
+      { row: 3, col: 1 },
+      { row: 4, col: 1 },
+      { row: 5, col: 1 }
+    ];
+
+    setupCells.forEach((cell, index) => {
+      blueDice[index].value = ((index % 6) + 1) as (typeof blueDice)[number]["value"];
+      blueDice[index].row = cell.row;
+      blueDice[index].col = cell.col;
+    });
+    blueDice[12].value = 6;
+
+    const next = placeDie(game, blueDice[12].id, 2, 1);
+
+    expect(next.currentPlayerIndex).toBe(0);
+    expect(next.actionCredits).toBe(3);
+    expect(next.lastAction?.completedKeys).toEqual(["row:2", "column:1", "box:0"]);
+  });
+
+  it("awards a combo when a previously awarded row is completed again from incomplete", () => {
+    const game = newGame({ playerCount: 2, seed: "repeat-row-combo" });
+    const blueDice = game.dice.filter((die) => die.ownerId === "p1");
+
+    blueDice.slice(0, 5).forEach((die, index) => {
+      die.row = 0;
+      die.col = index;
+    });
+    blueDice[5].row = 1;
+    blueDice[5].col = 0;
+    game.completedKeys = ["row:0"];
+
+    const next = moveDie(game, blueDice[5].id, 0, 5);
+
+    expect(next.currentPlayerIndex).toBe(0);
+    expect(next.actionCredits).toBe(1);
+    expect(next.lastAction?.completedKeys).toEqual(["row:0"]);
+  });
+
   it("moves placed dice and passes the turn when no combo action is earned", () => {
     const game = newGame({ playerCount: 2, seed: "move" });
     const die = game.dice.find((candidate) => candidate.ownerId === "p1")!;
@@ -132,6 +212,126 @@ describe("Disuko rules engine", () => {
     expect(movedDie?.row).toBe(1);
     expect(movedDie?.col).toBe(1);
     expect(next.currentPlayerIndex).toBe(1);
+  });
+
+  it("selects and moves another player's board die", () => {
+    const game = newGame({ playerCount: 2, seed: "move-opponent" });
+    const redDie = game.dice.find((candidate) => candidate.ownerId === "p2")!;
+    redDie.row = 0;
+    redDie.col = 0;
+
+    const selected = selectDie(game, redDie.id);
+    const moved = moveDie(selected, redDie.id, 1, 1);
+    const movedDie = moved.dice.find((candidate) => candidate.id === redDie.id);
+
+    expect(selected.selectedDieIds).toEqual([redDie.id]);
+    expect(movedDie?.row).toBe(1);
+    expect(movedDie?.col).toBe(1);
+    expect(moved.currentPlayerIndex).toBe(1);
+  });
+
+  it("tracks board changes visible since the active player's previous turn", () => {
+    const game = newGame({ playerCount: 2, seed: "recent-changes" });
+    const blueDie = game.dice.find((candidate) => candidate.ownerId === "p1")!;
+
+    const afterBluePlace = placeDie(game, blueDie.id, 0, 0);
+    const visibleForRed = recentBoardChangesForCurrentTurn(afterBluePlace);
+
+    expect(visibleForRed).toEqual([
+      {
+        type: "place",
+        playerId: "p1",
+        dieId: blueDie.id,
+        turnNumber: 1
+      }
+    ]);
+
+    const afterRedMove = moveDie(afterBluePlace, blueDie.id, 2, 2);
+    const visibleForBlue = recentBoardChangesForCurrentTurn(afterRedMove);
+
+    expect(visibleForBlue).toEqual([
+      {
+        type: "move",
+        playerId: "p2",
+        dieId: blueDie.id,
+        turnNumber: 2
+      }
+    ]);
+  });
+
+  it("awards the current player a combo action when moving another player's die completes a row", () => {
+    const game = newGame({ playerCount: 2, seed: "opponent-row-combo" });
+    const blueDice = game.dice.filter((die) => die.ownerId === "p1");
+    const redDie = game.dice.find((die) => die.ownerId === "p2")!;
+
+    blueDice.slice(0, 5).forEach((die, index) => {
+      die.value = (index + 1) as typeof die.value;
+      die.row = 0;
+      die.col = index;
+    });
+    redDie.value = 6;
+    redDie.row = 1;
+    redDie.col = 5;
+
+    const next = moveDie(game, redDie.id, 0, 5);
+
+    expect(next.currentPlayerIndex).toBe(0);
+    expect(next.actionCredits).toBe(1);
+    expect(next.completedKeys).toContain("row:0");
+    expect(next.lastAction?.playerId).toBe("p1");
+  });
+
+  it("awards the current player a combo action when moving another player's die completes a column", () => {
+    const game = newGame({ playerCount: 2, seed: "opponent-column-combo" });
+    const blueDice = game.dice.filter((die) => die.ownerId === "p1");
+    const redDie = game.dice.find((die) => die.ownerId === "p2")!;
+
+    blueDice.slice(0, 5).forEach((die, index) => {
+      die.value = (index + 1) as typeof die.value;
+      die.row = index;
+      die.col = 0;
+    });
+    redDie.value = 6;
+    redDie.row = 5;
+    redDie.col = 1;
+
+    const next = moveDie(game, redDie.id, 5, 0);
+
+    expect(next.currentPlayerIndex).toBe(0);
+    expect(next.actionCredits).toBe(1);
+    expect(next.completedKeys).toContain("column:0");
+    expect(next.lastAction?.playerId).toBe("p1");
+  });
+
+  it("stacks combo actions when moving another player's die completes a row and column", () => {
+    const game = newGame({ playerCount: 2, seed: "stacked-move-combo" });
+    const blueDice = game.dice.filter((die) => die.ownerId === "p1");
+    const redDie = game.dice.find((die) => die.ownerId === "p2")!;
+
+    blueDice.slice(0, 5).forEach((die, index) => {
+      die.value = ((index % 5) + 1) as typeof die.value;
+      die.row = 0;
+      die.col = index;
+    });
+    blueDice.slice(5, 10).forEach((die, index) => {
+      die.value = ((index % 5) + 1) as typeof die.value;
+      die.row = index + 1;
+      die.col = 5;
+    });
+    redDie.value = 6;
+    redDie.row = 5;
+    redDie.col = 4;
+    game.completedKeys = calculateCompletionKeys(game).map((completion) => completion.key);
+
+    const next = moveDie(game, redDie.id, 0, 5);
+
+    expect(next.currentPlayerIndex).toBe(0);
+    expect(next.actionCredits).toBe(2);
+    expect(next.lastAction?.playerId).toBe("p1");
+    expect(next.lastAction?.dieId).toBe(redDie.id);
+    expect(next.lastAction?.completedKeys).toEqual(["row:0", "column:5"]);
+    expect(next.completedKeys).toContain("row:0");
+    expect(next.completedKeys).toContain("column:5");
   });
 
   it("rerolls selected off-board dice only", () => {
@@ -151,6 +351,52 @@ describe("Disuko rules engine", () => {
     expect(next.currentPlayerIndex).toBe(1);
   });
 
+  it("sets exact reroll selections for current-player off-board dice", () => {
+    const game = newGame({ playerCount: 2, seed: "reroll-selection" });
+    const blueDice = game.dice.filter((die) => die.ownerId === "p1");
+    const redDie = game.dice.find((die) => die.ownerId === "p2")!;
+    blueDice[2].row = 0;
+    blueDice[2].col = 0;
+
+    const selected = setSelectedRerollDice(game, [blueDice[0].id, blueDice[1].id, blueDice[2].id, redDie.id]);
+    expect(selected.mode).toBe("reroll");
+    expect(selected.selectedDieIds).toEqual([blueDice[0].id, blueDice[1].id]);
+
+    const cleared = setSelectedRerollDice(selected, []);
+    expect(cleared.selectedDieIds).toEqual([]);
+  });
+
+  it("rerolls only an explicit partial stack selection", () => {
+    const game = newGame({ playerCount: 2, seed: "partial-reroll" });
+    game.rngState = 12345;
+    const blueDice = game.dice.filter((die) => die.ownerId === "p1");
+    blueDice.slice(0, 3).forEach((die) => {
+      die.value = 1;
+    });
+
+    const selected = setSelectedRerollDice(game, [blueDice[0].id, blueDice[1].id]);
+    const next = rerollDice(selected, selected.selectedDieIds, { defaultToAll: false });
+    const rerolled = next.dice.filter((die) => [blueDice[0].id, blueDice[1].id].includes(die.id));
+    const unselected = next.dice.find((die) => die.id === blueDice[2].id);
+
+    expect(rerolled.map((die) => die.value)).toEqual([6, 2]);
+    expect(unselected?.value).toBe(1);
+    expect(next.message).toContain("rerolled 2 dice");
+  });
+
+  it("does not reroll all dice after an explicit zero reroll selection", () => {
+    const game = newGame({ playerCount: 2, seed: "zero-reroll" });
+    const blueDice = game.dice.filter((die) => die.ownerId === "p1");
+    const originalValues = blueDice.map((die) => die.value);
+
+    const next = rerollDice(setSelectedRerollDice(game, []), [], { defaultToAll: false });
+
+    expect(next.dice.filter((die) => die.ownerId === "p1").map((die) => die.value)).toEqual(originalValues);
+    expect(next.currentPlayerIndex).toBe(0);
+    expect(next.actionCredits).toBe(1);
+    expect(next.message).toBe("Choose dice to reroll.");
+  });
+
   it("returns an immediately challenged conflicting die", () => {
     const game = newGame({ playerCount: 2, seed: "challenge" });
     const blueDice = game.dice.filter((die) => die.ownerId === "p1");
@@ -167,6 +413,32 @@ describe("Disuko rules engine", () => {
     expect(returned?.row).toBeNull();
     expect(returned?.col).toBeNull();
     expect(challenged.currentPlayerIndex).toBe(1);
+  });
+
+  it("resolves an immediate challenge from either clicked conflicting die", () => {
+    const clickOlderDieGame = newGame({ playerCount: 2, seed: "click-challenge-older" });
+    const olderClickDice = clickOlderDieGame.dice.filter((die) => die.ownerId === "p1");
+    olderClickDice[0].value = 3;
+    olderClickDice[0].row = 0;
+    olderClickDice[0].col = 0;
+    olderClickDice[1].value = 3;
+
+    const olderClickPlaced = placeDie(clickOlderDieGame, olderClickDice[1].id, 0, 1);
+    const olderClickChallenged = challengeViolation(olderClickPlaced, olderClickDice[0].id);
+
+    expect(olderClickChallenged.dice.find((die) => die.id === olderClickDice[1].id)?.row).toBeNull();
+
+    const clickNewerDieGame = newGame({ playerCount: 2, seed: "click-challenge-newer" });
+    const newerClickDice = clickNewerDieGame.dice.filter((die) => die.ownerId === "p1");
+    newerClickDice[0].value = 3;
+    newerClickDice[0].row = 0;
+    newerClickDice[0].col = 0;
+    newerClickDice[1].value = 3;
+
+    const newerClickPlaced = placeDie(clickNewerDieGame, newerClickDice[1].id, 0, 1);
+    const newerClickChallenged = challengeViolation(newerClickPlaced, newerClickDice[1].id);
+
+    expect(newerClickChallenged.dice.find((die) => die.id === newerClickDice[1].id)?.row).toBeNull();
   });
 
   it("resolves late challenges by returning one conflicting die", () => {

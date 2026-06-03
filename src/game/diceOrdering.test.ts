@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { orderTrayDice } from "./diceOrdering";
+import { groupDiceByValue, orderTrayDice } from "./diceOrdering";
 import type { DiceValue, Die } from "./types";
 
 describe("tray dice ordering", () => {
@@ -21,6 +21,21 @@ describe("tray dice ordering", () => {
 
     expect(orderedValues).toEqual([1, 2, 3, 1, 2, 1]);
     expect(hasAvoidableAdjacentDuplicate(orderedValues)).toBe(false);
+  });
+
+  it("groups dice by ascending value and omits missing values", () => {
+    const groups = groupDiceByValue(makeDice([6, 2, 2, 4, 6]));
+
+    expect(groups.map((group) => group.value)).toEqual([2, 4, 6]);
+    expect(groups.map((group) => group.count)).toEqual([2, 1, 2]);
+  });
+
+  it("keeps the first die of a value as the representative die", () => {
+    const dice = makeDice([3, 1, 3, 3]);
+    const group = groupDiceByValue(dice).find((diceGroup) => diceGroup.value === 3);
+
+    expect(group?.representativeDie.id).toBe("d0");
+    expect(group?.dice.map((die) => die.id)).toEqual(["d0", "d2", "d3"]);
   });
 });
 
