@@ -10,6 +10,7 @@ import {
   type ReactNode
 } from "react";
 import { createPortal } from "react-dom";
+import { cellsForBox } from "./game/geometry";
 import {
   challengeViolation,
   conflictCellKeys,
@@ -32,13 +33,15 @@ import {
   wouldPlaceDieConflict
 } from "./game/engine";
 import { groupDiceByValue, type DiceValueGroup } from "./game/diceOrdering";
-import type { ActionMode, DiceValue, Die, GameState, Player, PlayerColor } from "./game/types";
+import { BOARD_SIZE, DICE_VALUES, type ActionMode, type DiceValue, type Die, type GameState, type Player, type PlayerColor } from "./game/types";
 import { isTabletopViewportSupported } from "./tabletopFit";
 
 const STORAGE_KEY = "disuko-save-v1";
 const DRAG_THRESHOLD_PX = 8;
 const REROLL_STACK_LONG_PRESS_MS = 450;
 const INVALID_MOVE_ANIMATION_MS = 2160;
+const COMPLETION_HIGHLIGHT_MS = 780;
+const COMPLETION_BONUS_MS = 980;
 const logoUrl = `${import.meta.env.BASE_URL}logo.png`;
 const boardIndexes = Array.from({ length: 36 }, (_, index) => ({
   row: Math.floor(index / 6),
@@ -77,6 +80,7 @@ type SetupStartOptions = {
 };
 
 type TabletopSlot = "top" | "right" | "bottom" | "left";
+type CompletionRewardPhase = "highlight" | "bonus";
 
 interface ViewportSize {
   width: number;
@@ -105,6 +109,32 @@ type DragPointerEvent = {
   clientY: number;
   preventDefault: () => void;
 };
+
+interface QueuedCompletionReward {
+  playerId: string;
+  completedKeys: string[];
+}
+
+interface CompletionReward extends QueuedCompletionReward {
+  id: number;
+  activeIndex: number;
+  phase: CompletionRewardPhase;
+}
+
+interface BoardCompletionReward {
+  id: number;
+  activeKey: string | null;
+  bonusActions: number | null;
+  color: string;
+  playerSlot?: TabletopSlot;
+}
+
+interface CompletionSegment {
+  row: number;
+  col: number;
+  rowSpan: number;
+  colSpan: number;
+}
 
 export default function App(): ReactElement {
   const [booting, setBooting] = useState(true);
@@ -309,9 +339,14 @@ function GameScreen({
   const [hasExplicitRerollSelection, setHasExplicitRerollSelection] = useState(false);
   const [dragPreview, setDragPreview] = useState<{ die: Die; x: number; y: number } | null>(null);
   const [invalidPlacement, setInvalidPlacement] = useState<InvalidPlacementPreview | null>(null);
+  const [completionReward, setCompletionReward] = useState<CompletionReward | null>(null);
   const [turnPromptOpen, setTurnPromptOpen] = useState(false);
   const invalidPlacementId = useRef(0);
   const invalidPlacementTimer = useRef<number | null>(null);
+  const completionRewardId = useRef(0);
+  const completionRewardActive = useRef(false);
+  const completionRewardQueue = useRef<QueuedCompletionReward[]>([]);
+  const completionRewardSignature = useRef<string | null>(completionActionSignature(game));
   const trackedTurn = useRef<TrackedTurn>({
     seed: game.seed,
     turnNumber: game.turnNumber,
@@ -341,6 +376,19 @@ function GameScreen({
   const activePlayerColor = playerColorCssVars[activePlayer.color];
   const conflictDice = useMemo(() => conflictDieIds(game), [game]);
   const conflictCells = useMemo(() => conflictCellKeys(game), [game]);
+  const rewardPlayer = completionReward
+    ? game.players.find((player) => player.id === completionReward.playerId)
+    : undefined;
+  const completionRewardOverlay: BoardCompletionReward | null = completionReward
+    ? {
+        id: completionReward.id,
+        activeKey:
+          completionReward.phase === "highlight" ? completionReward.completedKeys[completionReward.activeIndex] : null,
+        bonusActions: completionReward.phase === "bonus" ? completionReward.completedKeys.length : null,
+        color: rewardPlayer ? playerColorCssVars[rewardPlayer.color] : activePlayerColor,
+        playerSlot: game.tabletopMode ? tabletopSlotForPlayer(game, completionReward.playerId) : undefined
+      }
+    : null;
   const recentMoveHighlights = useMemo(() => {
     const playerColors = new Map(game.players.map((player) => [player.id, player.color]));
     const highlights = new Map<string, PlayerColor>();
@@ -370,6 +418,18 @@ function GameScreen({
     }
 
     setInvalidPlacement(null);
+  };
+
+  const showCompletionReward = (reward: QueuedCompletionReward) => {
+    completionRewardId.current += 1;
+    completionRewardActive.current = true;
+    setCompletionReward({
+      id: completionRewardId.current,
+      playerId: reward.playerId,
+      completedKeys: reward.completedKeys,
+      activeIndex: 0,
+      phase: "highlight"
+    });
   };
 
   const clearDragListeners = () => {
@@ -402,6 +462,85 @@ function GameScreen({
       clearDragListeners();
     };
   }, []);
+
+  useEffect(() => {
+    completionRewardQueue.current = [];
+    completionRewardActive.current = false;
+    completionRewardSignature.current = completionActionSignature(game);
+    setCompletionReward(null);
+  }, [game.seed]);
+
+  useEffect(() => {
+    const signature = completionActionSignature(game);
+    const lastAction = game.lastAction;
+
+    if (!signature || signature === completionRewardSignature.current || !lastAction) {
+      return;
+    }
+
+    completionRewardSignature.current = signature;
+
+    const reward = {
+      playerId: lastAction.playerId,
+      completedKeys: [...lastAction.completedKeys]
+    };
+
+    if (completionRewardActive.current) {
+      completionRewardQueue.current.push(reward);
+      return;
+    }
+
+    showCompletionReward(reward);
+  }, [game]);
+
+  useEffect(() => {
+    if (!completionReward) {
+      return;
+    }
+
+    const timer = window.setTimeout(
+      () => {
+        setCompletionReward((current) => {
+          if (!current || current.id !== completionReward.id) {
+            return current;
+          }
+
+          if (current.phase === "highlight" && current.activeIndex < current.completedKeys.length - 1) {
+            return {
+              ...current,
+              activeIndex: current.activeIndex + 1
+            };
+          }
+
+          if (current.phase === "highlight") {
+            return {
+              ...current,
+              phase: "bonus"
+            };
+          }
+
+          const nextReward = completionRewardQueue.current.shift();
+
+          if (nextReward) {
+            completionRewardId.current += 1;
+            return {
+              id: completionRewardId.current,
+              playerId: nextReward.playerId,
+              completedKeys: nextReward.completedKeys,
+              activeIndex: 0,
+              phase: "highlight"
+            };
+          }
+
+          completionRewardActive.current = false;
+          return null;
+        });
+      },
+      completionReward.phase === "highlight" ? COMPLETION_HIGHLIGHT_MS : COMPLETION_BONUS_MS
+    );
+
+    return () => window.clearTimeout(timer);
+  }, [completionReward]);
 
   useEffect(() => {
     const previous = trackedTurn.current;
@@ -827,6 +966,7 @@ function GameScreen({
       conflictCells={conflictCells}
       recentMoveHighlights={recentMoveHighlights}
       draggingDieId={transientDieId}
+      completionReward={completionRewardOverlay}
       tabletopMode={game.tabletopMode}
       activePlayerColor={activePlayerColor}
       onCell={handleCell}
@@ -997,6 +1137,92 @@ function tabletopSlotsFor(playerCount: number): TabletopSlot[] {
   return ["bottom", "top", "left", "right"];
 }
 
+function tabletopSlotForPlayer(game: GameState, playerId: string): TabletopSlot {
+  const playerIndex = game.players.findIndex((player) => player.id === playerId);
+  const slots = tabletopSlotsFor(game.players.length);
+
+  return slots[playerIndex] ?? "bottom";
+}
+
+function completionActionSignature(game: GameState): string | null {
+  const action = game.lastAction;
+
+  if (!action || action.completedKeys.length === 0) {
+    return null;
+  }
+
+  return [
+    game.seed,
+    game.turnNumber,
+    game.boardChanges.length,
+    action.type,
+    action.playerId,
+    action.dieId ?? "",
+    action.completedKeys.join("|")
+  ].join(":");
+}
+
+function completionSegmentsForKey(key: string, game: GameState): CompletionSegment[] {
+  const [kind, rawIndex] = key.split(":");
+  const index = Number(rawIndex);
+
+  if (!Number.isInteger(index)) {
+    return [];
+  }
+
+  if (kind === "row" && index >= 0 && index < BOARD_SIZE) {
+    return [{ row: index, col: 0, rowSpan: 1, colSpan: BOARD_SIZE }];
+  }
+
+  if (kind === "column" && index >= 0 && index < BOARD_SIZE) {
+    return [{ row: 0, col: index, rowSpan: BOARD_SIZE, colSpan: 1 }];
+  }
+
+  if (kind === "box") {
+    try {
+      const cells = cellsForBox(index);
+      const rows = cells.map((cell) => cell.row);
+      const cols = cells.map((cell) => cell.col);
+      const row = Math.min(...rows);
+      const col = Math.min(...cols);
+
+      return [
+        {
+          row,
+          col,
+          rowSpan: Math.max(...rows) - row + 1,
+          colSpan: Math.max(...cols) - col + 1
+        }
+      ];
+    } catch {
+      return [];
+    }
+  }
+
+  if (kind === "value" && DICE_VALUES.includes(index as DiceValue)) {
+    return game.dice
+      .filter((die) => isOnBoard(die) && die.value === index)
+      .map((die) => ({
+        row: die.row as number,
+        col: die.col as number,
+        rowSpan: 1,
+        colSpan: 1
+      }));
+  }
+
+  return [];
+}
+
+function completionSegmentStyle(segment: CompletionSegment, color: string): CSSProperties {
+  return {
+    "--completion-color": color,
+    "--completion-row": segment.row,
+    "--completion-col": segment.col,
+    "--completion-row-span": segment.rowSpan,
+    "--completion-col-span": segment.colSpan
+  } as CSSProperties;
+}
+
 function TurnStartPrompt({
   player,
   playerNumber,
@@ -1057,6 +1283,7 @@ function Board({
   conflictCells,
   recentMoveHighlights,
   draggingDieId,
+  completionReward,
   tabletopMode = false,
   activePlayerColor,
   onCell,
@@ -1071,6 +1298,7 @@ function Board({
   conflictCells: Set<string>;
   recentMoveHighlights: Map<string, PlayerColor>;
   draggingDieId: string | null;
+  completionReward: BoardCompletionReward | null;
   tabletopMode?: boolean;
   activePlayerColor?: string;
   onCell: (row: number, col: number) => void;
@@ -1080,6 +1308,13 @@ function Board({
   onDiePointerUp: (event: ReactPointerEvent<HTMLElement>) => void;
   onDiePointerCancel: (event: ReactPointerEvent<HTMLElement>) => void;
 }): ReactElement {
+  const completionSegments = completionReward?.activeKey
+    ? completionSegmentsForKey(completionReward.activeKey, game)
+    : [];
+  const bonusLabel = completionReward?.bonusActions
+    ? `+${completionReward.bonusActions} Action${completionReward.bonusActions === 1 ? "" : "s"}`
+    : null;
+
   return (
     <section
       className={`board-wrap ${tabletopMode ? "is-tabletop-board" : ""}`}
@@ -1130,6 +1365,27 @@ function Board({
             </button>
           );
         })}
+        {completionSegments.map((segment, index) => (
+          <div
+            className="completion-highlight-segment"
+            key={`${completionReward?.id}-${completionReward?.activeKey}-${index}`}
+            style={completionSegmentStyle(segment, completionReward?.color ?? activePlayerColor ?? "var(--cream)")}
+            aria-hidden="true"
+          />
+        ))}
+        {completionReward?.bonusActions && bonusLabel ? (
+          <div
+            className={`completion-bonus-pop ${
+              completionReward.playerSlot ? `faces-${completionReward.playerSlot}` : ""
+            }`}
+            key={`${completionReward.id}-bonus`}
+            style={{ "--completion-color": completionReward.color } as CSSProperties}
+            role="status"
+            aria-live="polite"
+          >
+            {bonusLabel}
+          </div>
+        ) : null}
       </div>
     </section>
   );
