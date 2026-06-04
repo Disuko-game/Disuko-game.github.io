@@ -19,6 +19,13 @@
   --shadow: rgba(24, 10, 4, 0.55);
   --thin-line: rgba(117, 64, 23, 0.58);
   --thick-line: rgba(104, 52, 18, 0.9);
+  --app-viewport-height: 100vh;
+}
+
+@supports (height: 100dvh) {
+  :root {
+    --app-viewport-height: 100dvh;
+  }
 }
 
 * {
@@ -26,15 +33,26 @@
 }
 
 html,
-body,
-#root {
-  min-height: 100%;
+body {
+  height: 100%;
   margin: 0;
+  padding: 0;
+  overscroll-behavior: none;
+  background: #5a2b13;
 }
 
 body {
-  min-height: 100dvh;
-  overflow-x: hidden;
+  min-height: var(--app-viewport-height);
+  color: #fff8df;
+  overflow: hidden;
+}
+
+#root {
+  position: relative;
+  width: 100vw;
+  height: var(--app-viewport-height);
+  min-height: 100%;
+  overflow: hidden;
 }
 
 button,
@@ -50,11 +68,19 @@ button {
 .splash-screen,
 .setup-screen,
 .game-shell {
-  min-height: 100dvh;
+  min-height: var(--app-viewport-height);
   background:
     radial-gradient(circle at 24% 16%, rgba(255, 213, 135, 0.18), transparent 28rem),
     linear-gradient(90deg, rgba(52, 22, 8, 0.18) 0 1px, transparent 1px 16px),
     linear-gradient(180deg, #8a451d 0%, #5b2b12 46%, #35160a 100%);
+}
+
+.setup-screen,
+.game-shell {
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch;
 }
 
 .boot-loader,
@@ -264,7 +290,8 @@ p {
   grid-template-rows: auto auto minmax(0, 1fr) auto auto;
   gap: 0.72rem;
   width: min(100%, 34rem);
-  min-height: 100dvh;
+  height: var(--app-viewport-height);
+  min-height: var(--app-viewport-height);
   margin: 0 auto;
   padding: max(0.7rem, env(safe-area-inset-top)) 0.75rem max(0.75rem, env(safe-area-inset-bottom));
   box-shadow: 0 0 3rem rgba(0, 0, 0, 0.34);
