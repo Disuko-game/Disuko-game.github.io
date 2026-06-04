@@ -1003,6 +1003,110 @@ p {
     drop-shadow(0 0.58rem 0.6rem rgba(0, 0, 0, 0.36));
 }
 
+.winner-celebration {
+  position: fixed;
+  inset: 0;
+  z-index: 24;
+  display: grid;
+  place-items: center;
+  overflow: hidden;
+  pointer-events: none;
+}
+
+.winner-confetti-field {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  pointer-events: none;
+}
+
+.winner-confetti-piece {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: var(--confetti-width);
+  height: var(--confetti-height);
+  border-radius: 0.12rem;
+  background: var(--confetti-color);
+  box-shadow:
+    inset 0 0.08rem 0 rgba(255, 255, 255, 0.32),
+    0 0 0.2rem color-mix(in srgb, var(--confetti-color), transparent 42%);
+  opacity: 0;
+  transform: translate3d(var(--confetti-start-x), var(--confetti-start-y), 0) rotate(0deg);
+  animation: winnerConfettiFall var(--confetti-duration) cubic-bezier(0.2, 0.72, 0.3, 1) var(--confetti-delay) both;
+}
+
+.winner-panel {
+  --winner-color: var(--cream-deep);
+  --winner-facing-rotate: 0deg;
+  position: relative;
+  z-index: 2;
+  display: grid;
+  justify-items: center;
+  gap: 0.72rem;
+  min-width: min(82vw, 18rem);
+  border: 0.16rem solid color-mix(in srgb, var(--winner-color), white 44%);
+  border-radius: 0.95rem;
+  background:
+    radial-gradient(circle at 50% 0%, rgba(255, 255, 255, 0.26), transparent 58%),
+    linear-gradient(180deg, rgba(101, 43, 14, 0.96), rgba(38, 14, 5, 0.97));
+  box-shadow:
+    inset 0 0.13rem 0 rgba(255, 255, 255, 0.18),
+    inset 0 -0.18rem 0 rgba(0, 0, 0, 0.18),
+    0 0.85rem 1.35rem rgba(0, 0, 0, 0.38),
+    0 0 1.3rem color-mix(in srgb, var(--winner-color), transparent 24%);
+  padding: 1rem;
+  pointer-events: auto;
+  transform: rotate(var(--winner-facing-rotate));
+  animation: winnerPanelPop 220ms ease-out both;
+}
+
+.winner-panel.faces-top {
+  --winner-facing-rotate: 180deg;
+}
+
+.winner-panel.faces-left {
+  --winner-facing-rotate: 90deg;
+}
+
+.winner-panel.faces-right {
+  --winner-facing-rotate: -90deg;
+}
+
+.winner-panel strong {
+  color: color-mix(in srgb, var(--winner-color), #fff8d8 46%);
+  font-size: clamp(1.7rem, 8vw, 2.8rem);
+  font-weight: 950;
+  line-height: 1;
+  text-align: center;
+  text-shadow:
+    0 0.12rem 0 rgba(0, 0, 0, 0.42),
+    0 0 0.55rem color-mix(in srgb, var(--winner-color), white 24%);
+}
+
+.winner-panel button {
+  min-width: 9rem;
+  min-height: 2.85rem;
+  border: 0;
+  border-radius: 0.72rem;
+  background:
+    linear-gradient(180deg, color-mix(in srgb, var(--winner-color), white 34%), color-mix(in srgb, var(--winner-color), black 18%));
+  color: #fff8d8;
+  font-size: 1rem;
+  font-weight: 950;
+  padding: 0 1.1rem;
+  text-shadow: 0 0.09rem 0 rgba(0, 0, 0, 0.38);
+  box-shadow:
+    inset 0 0.13rem 0 rgba(255, 255, 255, 0.26),
+    0 0.42rem 0.68rem rgba(0, 0, 0, 0.32);
+  touch-action: manipulation;
+}
+
+.winner-panel button:focus-visible {
+  outline: 0.18rem solid #fff3a6;
+  outline-offset: 0.14rem;
+}
+
 .turn-start-backdrop {
   position: fixed;
   inset: 0;
@@ -1393,6 +1497,38 @@ p {
   100% {
     opacity: 0;
     transform: translate(-50%, -50%) translateY(0.2rem) rotate(var(--invalid-facing-rotate)) scale(0.98);
+  }
+}
+
+@keyframes winnerConfettiFall {
+  0% {
+    opacity: 0;
+    transform: translate3d(var(--confetti-start-x), var(--confetti-start-y), 0) rotate(0deg) scale(0.72);
+  }
+
+  10% {
+    opacity: 1;
+  }
+
+  76% {
+    opacity: 1;
+  }
+
+  100% {
+    opacity: 0;
+    transform: translate3d(var(--confetti-end-x), var(--confetti-end-y), 0) rotate(var(--confetti-spin)) scale(1);
+  }
+}
+
+@keyframes winnerPanelPop {
+  from {
+    opacity: 0;
+    transform: rotate(var(--winner-facing-rotate)) scale(0.9);
+  }
+
+  to {
+    opacity: 1;
+    transform: rotate(var(--winner-facing-rotate)) scale(1);
   }
 }
 

@@ -42,10 +42,22 @@ const REROLL_STACK_LONG_PRESS_MS = 450;
 const INVALID_MOVE_ANIMATION_MS = 2160;
 const COMPLETION_HIGHLIGHT_MS = 780;
 const COMPLETION_BONUS_MS = 980;
+const CONFETTI_COLORS = ["#fff1bf", "#f4b515", "#08a832", "#0878d6", "#e43322"] as const;
 const logoUrl = `${import.meta.env.BASE_URL}logo.png`;
 const boardIndexes = Array.from({ length: 36 }, (_, index) => ({
   row: Math.floor(index / 6),
   col: index % 6
+}));
+const confettiPieces = Array.from({ length: 64 }, (_, index) => ({
+  id: index,
+  laneOffset: (((index * 37) % 101) / 100 - 0.5) * 2,
+  landingOffset: (((index * 53) % 101) / 100 - 0.5) * 2,
+  delayMs: (index % 16) * 64,
+  durationMs: 1820 + (index % 6) * 130,
+  widthRem: 0.28 + (index % 3) * 0.08,
+  heightRem: 0.48 + (index % 4) * 0.08,
+  spinDeg: (index % 2 === 0 ? 1 : -1) * (420 + (index % 7) * 48),
+  color: CONFETTI_COLORS[index % CONFETTI_COLORS.length]
 }));
 
 const pipPositions: Record<number, { col: number; row: number }> = {
@@ -134,6 +146,19 @@ interface BoardInvalidMoveMessage {
   id: number;
   color: string;
   playerSlot?: TabletopSlot;
+}
+
+interface WinnerCelebrationLayout {
+  playerId: string;
+  playerNumber: number;
+  color: string;
+  playerSlot: TabletopSlot;
+  trayX: number;
+  trayY: number;
+  trayWidth: number;
+  trayHeight: number;
+  viewportWidth: number;
+  viewportHeight: number;
 }
 
 interface CompletionSegment {
@@ -347,6 +372,7 @@ function GameScreen({
   const [dragPreview, setDragPreview] = useState<{ die: Die; x: number; y: number } | null>(null);
   const [invalidPlacement, setInvalidPlacement] = useState<InvalidPlacementPreview | null>(null);
   const [completionReward, setCompletionReward] = useState<CompletionReward | null>(null);
+  const [winnerCelebration, setWinnerCelebration] = useState<WinnerCelebrationLayout | null>(null);
   const [turnPromptOpen, setTurnPromptOpen] = useState(false);
   const invalidPlacementId = useRef(0);
   const invalidPlacementTimer = useRef<number | null>(null);
@@ -381,6 +407,7 @@ function GameScreen({
   const trayStatusLabel = game.mode === "reroll" ? "Select the dice to re-roll" : actionCountLabel;
   const activePlayerNumber = game.currentPlayerIndex + 1;
   const activePlayerColor = playerColorCssVars[activePlayer.color];
+  const winner = game.winnerId ? game.players.find((player) => player.id === game.winnerId) : undefined;
   const conflictDice = useMemo(() => conflictDieIds(game), [game]);
   const conflictCells = useMemo(() => conflictCellKeys(game), [game]);
   const invalidPlacementPlayer = invalidPlacement
@@ -606,6 +633,49 @@ function GameScreen({
       setOpenRerollValue(null);
     }
   }, [currentTrayGroups, openRerollValue]);
+
+  useLayoutEffect(() => {
+    if (game.phase !== "won" || !winner) {
+      setWinnerCelebration(null);
+      return;
+    }
+
+    const updateWinnerCelebration = () => {
+      const tray = document.querySelector<HTMLElement>(`.dice-tray[data-player-id="${winner.id}"]`);
+      const trayRect = tray?.getBoundingClientRect();
+      const playerSlot = game.tabletopMode ? tabletopSlotForPlayer(game, winner.id) : "bottom";
+      const fallbackX = window.innerWidth / 2;
+      const fallbackY =
+        playerSlot === "top"
+          ? window.innerHeight * 0.12
+          : playerSlot === "left" || playerSlot === "right"
+            ? window.innerHeight / 2
+            : window.innerHeight * 0.86;
+      const playerIndex = game.players.findIndex((player) => player.id === winner.id);
+
+      setWinnerCelebration({
+        playerId: winner.id,
+        playerNumber: playerIndex + 1,
+        color: playerColorCssVars[winner.color],
+        playerSlot,
+        trayX: trayRect ? trayRect.left + trayRect.width / 2 : fallbackX,
+        trayY: trayRect ? trayRect.top + trayRect.height / 2 : fallbackY,
+        trayWidth: trayRect?.width ?? 220,
+        trayHeight: trayRect?.height ?? 84,
+        viewportWidth: window.innerWidth,
+        viewportHeight: window.innerHeight
+      });
+    };
+
+    updateWinnerCelebration();
+    window.addEventListener("resize", updateWinnerCelebration);
+    window.addEventListener("orientationchange", updateWinnerCelebration);
+
+    return () => {
+      window.removeEventListener("resize", updateWinnerCelebration);
+      window.removeEventListener("orientationchange", updateWinnerCelebration);
+    };
+  }, [game, winner]);
 
   useEffect(() => {
     if (!openRerollValue) {
@@ -1101,6 +1171,8 @@ function GameScreen({
         <TurnStartPrompt player={activePlayer} playerNumber={activePlayerNumber} onPlay={() => setTurnPromptOpen(false)} />
       ) : null}
 
+      {winnerCelebration ? <WinnerCelebration layout={winnerCelebration} onNewGame={handleNewGame} /> : null}
+
       {children}
     </main>
   );
@@ -1158,6 +1230,100 @@ function tabletopSlotForPlayer(game: GameState, playerId: string): TabletopSlot 
   const slots = tabletopSlotsFor(game.players.length);
 
   return slots[playerIndex] ?? "bottom";
+}
+
+function WinnerCelebration({
+  layout,
+  onNewGame
+}: {
+  layout: WinnerCelebrationLayout;
+  onNewGame: () => void;
+}): ReactElement {
+  return (
+    <div className="winner-celebration" aria-hidden={false}>
+      <div className="winner-confetti-field" aria-hidden="true">
+        {confettiPieces.map((piece) => (
+          <span className="winner-confetti-piece" key={piece.id} style={confettiPieceStyle(piece, layout)} />
+        ))}
+      </div>
+      <section
+        className={`winner-panel faces-${layout.playerSlot}`}
+        style={{ "--winner-color": layout.color } as CSSProperties}
+        role="dialog"
+        aria-labelledby="winner-title"
+      >
+        <strong id="winner-title">Player {layout.playerNumber} won!</strong>
+        <button type="button" onClick={onNewGame}>
+          New game
+        </button>
+      </section>
+    </div>
+  );
+}
+
+function confettiPieceStyle(
+  piece: (typeof confettiPieces)[number],
+  layout: WinnerCelebrationLayout
+): CSSProperties {
+  const path = confettiPiecePath(piece, layout);
+
+  return {
+    "--confetti-start-x": `${path.startX}px`,
+    "--confetti-start-y": `${path.startY}px`,
+    "--confetti-end-x": `${path.endX}px`,
+    "--confetti-end-y": `${path.endY}px`,
+    "--confetti-color": piece.color,
+    "--confetti-delay": `${piece.delayMs}ms`,
+    "--confetti-duration": `${piece.durationMs}ms`,
+    "--confetti-spin": `${piece.spinDeg}deg`,
+    "--confetti-width": `${piece.widthRem}rem`,
+    "--confetti-height": `${piece.heightRem}rem`
+  } as CSSProperties;
+}
+
+function confettiPiecePath(
+  piece: (typeof confettiPieces)[number],
+  layout: WinnerCelebrationLayout
+): { startX: number; startY: number; endX: number; endY: number } {
+  const laneSpread = Math.max(160, layout.trayWidth * 1.18);
+  const landingSpread = Math.max(54, Math.min(layout.trayWidth, layout.trayHeight * 2.4));
+  const laneOffset = piece.laneOffset * laneSpread;
+  const landingOffset = piece.landingOffset * landingSpread * 0.48;
+  const offscreen = 32;
+
+  if (layout.playerSlot === "top") {
+    return {
+      startX: clamp(layout.trayX + laneOffset, -offscreen, layout.viewportWidth + offscreen),
+      startY: layout.viewportHeight + offscreen,
+      endX: clamp(layout.trayX + landingOffset, -offscreen, layout.viewportWidth + offscreen),
+      endY: layout.trayY
+    };
+  }
+
+  if (layout.playerSlot === "left") {
+    return {
+      startX: layout.viewportWidth + offscreen,
+      startY: clamp(layout.trayY + laneOffset, -offscreen, layout.viewportHeight + offscreen),
+      endX: layout.trayX,
+      endY: clamp(layout.trayY + landingOffset, -offscreen, layout.viewportHeight + offscreen)
+    };
+  }
+
+  if (layout.playerSlot === "right") {
+    return {
+      startX: -offscreen,
+      startY: clamp(layout.trayY + laneOffset, -offscreen, layout.viewportHeight + offscreen),
+      endX: layout.trayX,
+      endY: clamp(layout.trayY + landingOffset, -offscreen, layout.viewportHeight + offscreen)
+    };
+  }
+
+  return {
+    startX: clamp(layout.trayX + laneOffset, -offscreen, layout.viewportWidth + offscreen),
+    startY: -offscreen,
+    endX: clamp(layout.trayX + landingOffset, -offscreen, layout.viewportWidth + offscreen),
+    endY: layout.trayY
+  };
 }
 
 function completionActionSignature(game: GameState): string | null {
@@ -1237,6 +1403,10 @@ function completionSegmentStyle(segment: CompletionSegment, color: string): CSSP
     "--completion-row-span": segment.rowSpan,
     "--completion-col-span": segment.colSpan
   } as CSSProperties;
+}
+
+function clamp(value: number, min: number, max: number): number {
+  return Math.min(Math.max(value, min), max);
 }
 
 function TurnStartPrompt({
