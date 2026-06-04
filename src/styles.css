@@ -946,25 +946,46 @@ p {
 }
 
 .invalid-move-toast {
-  position: fixed;
-  right: 1rem;
-  bottom: calc(env(safe-area-inset-bottom) + 5.3rem);
-  z-index: 23;
-  border: 0.12rem solid rgba(255, 239, 205, 0.72);
-  border-radius: 0.7rem;
-  background: linear-gradient(180deg, #f34c34, #98140d);
+  --invalid-color: #f34c34;
+  --invalid-facing-rotate: 0deg;
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  z-index: 6;
+  min-width: min(76%, 10.5rem);
+  border: 0.14rem solid color-mix(in srgb, var(--invalid-color), white 44%);
+  border-radius: 0.82rem;
+  background:
+    radial-gradient(circle at 50% 0%, rgba(255, 255, 255, 0.24), transparent 56%),
+    linear-gradient(180deg, #f34c34, #98140d);
   color: #fff8d8;
-  font-size: 0.82rem;
+  font-size: clamp(1.05rem, 5vw, 1.58rem);
   font-weight: 950;
   letter-spacing: 0;
   line-height: 1;
-  padding: 0.56rem 0.74rem;
+  padding: 0.56rem 0.84rem 0.62rem;
+  text-align: center;
   text-shadow: 0 0.09rem 0 rgba(0, 0, 0, 0.36);
   box-shadow:
     inset 0 0.12rem 0 rgba(255, 255, 255, 0.22),
-    0 0.5rem 0.8rem rgba(0, 0, 0, 0.34);
+    inset 0 -0.14rem 0 rgba(0, 0, 0, 0.14),
+    0 0.5rem 0.8rem rgba(0, 0, 0, 0.34),
+    0 0 1.1rem color-mix(in srgb, var(--invalid-color), transparent 26%);
+  transform: translate(-50%, -50%) rotate(var(--invalid-facing-rotate));
   animation: invalidToast 2160ms ease-out both;
   pointer-events: none;
+}
+
+.invalid-move-toast.faces-top {
+  --invalid-facing-rotate: 180deg;
+}
+
+.invalid-move-toast.faces-left {
+  --invalid-facing-rotate: 90deg;
+}
+
+.invalid-move-toast.faces-right {
+  --invalid-facing-rotate: -90deg;
 }
 
 .invalid-return-preview {
@@ -1360,18 +1381,18 @@ p {
 @keyframes invalidToast {
   0% {
     opacity: 0;
-    transform: translateY(0.35rem) scale(0.96);
+    transform: translate(-50%, -50%) translateY(0.35rem) rotate(var(--invalid-facing-rotate)) scale(0.96);
   }
 
   16%,
   72% {
     opacity: 1;
-    transform: translateY(0) scale(1);
+    transform: translate(-50%, -50%) rotate(var(--invalid-facing-rotate)) scale(1);
   }
 
   100% {
     opacity: 0;
-    transform: translateY(0.2rem) scale(0.98);
+    transform: translate(-50%, -50%) translateY(0.2rem) rotate(var(--invalid-facing-rotate)) scale(0.98);
   }
 }
 

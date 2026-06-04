@@ -91,6 +91,7 @@ interface ViewportSize {
 interface InvalidPlacementPreview {
   id: number;
   die: Die;
+  playerId: string;
   startX: number;
   startY: number;
   returnX: number;
@@ -125,6 +126,12 @@ interface BoardCompletionReward {
   id: number;
   activeKey: string | null;
   bonusActions: number | null;
+  color: string;
+  playerSlot?: TabletopSlot;
+}
+
+interface BoardInvalidMoveMessage {
+  id: number;
   color: string;
   playerSlot?: TabletopSlot;
 }
@@ -376,6 +383,16 @@ function GameScreen({
   const activePlayerColor = playerColorCssVars[activePlayer.color];
   const conflictDice = useMemo(() => conflictDieIds(game), [game]);
   const conflictCells = useMemo(() => conflictCellKeys(game), [game]);
+  const invalidPlacementPlayer = invalidPlacement
+    ? game.players.find((player) => player.id === invalidPlacement.playerId)
+    : undefined;
+  const invalidMoveMessage: BoardInvalidMoveMessage | null = invalidPlacement
+    ? {
+        id: invalidPlacement.id,
+        color: invalidPlacementPlayer ? playerColorCssVars[invalidPlacementPlayer.color] : activePlayerColor,
+        playerSlot: game.tabletopMode ? tabletopSlotForPlayer(game, invalidPlacement.playerId) : undefined
+      }
+    : null;
   const rewardPlayer = completionReward
     ? game.players.find((player) => player.id === completionReward.playerId)
     : undefined;
@@ -645,6 +662,7 @@ function GameScreen({
     setInvalidPlacement({
       id,
       die,
+      playerId: activePlayer.id,
       startX,
       startY,
       returnX: endX - startX,
@@ -967,6 +985,7 @@ function GameScreen({
       recentMoveHighlights={recentMoveHighlights}
       draggingDieId={transientDieId}
       completionReward={completionRewardOverlay}
+      invalidMoveMessage={invalidMoveMessage}
       tabletopMode={game.tabletopMode}
       activePlayerColor={activePlayerColor}
       onCell={handleCell}
@@ -1061,9 +1080,6 @@ function GameScreen({
 
       {invalidPlacement ? (
         <>
-          <div className="invalid-move-toast" role="status" aria-live="assertive">
-            invalid move
-          </div>
           <div
             className="invalid-return-preview"
             style={
@@ -1284,6 +1300,7 @@ function Board({
   recentMoveHighlights,
   draggingDieId,
   completionReward,
+  invalidMoveMessage,
   tabletopMode = false,
   activePlayerColor,
   onCell,
@@ -1299,6 +1316,7 @@ function Board({
   recentMoveHighlights: Map<string, PlayerColor>;
   draggingDieId: string | null;
   completionReward: BoardCompletionReward | null;
+  invalidMoveMessage: BoardInvalidMoveMessage | null;
   tabletopMode?: boolean;
   activePlayerColor?: string;
   onCell: (row: number, col: number) => void;
@@ -1384,6 +1402,19 @@ function Board({
             aria-live="polite"
           >
             {bonusLabel}
+          </div>
+        ) : null}
+        {invalidMoveMessage ? (
+          <div
+            className={`invalid-move-toast ${
+              invalidMoveMessage.playerSlot ? `faces-${invalidMoveMessage.playerSlot}` : ""
+            }`}
+            key={`invalid-${invalidMoveMessage.id}`}
+            style={{ "--invalid-color": invalidMoveMessage.color } as CSSProperties}
+            role="status"
+            aria-live="assertive"
+          >
+            invalid move
           </div>
         ) : null}
       </div>
