@@ -1,5 +1,6 @@
 import {
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -8,6 +9,7 @@ import {
   type ReactElement,
   type ReactNode
 } from "react";
+import { createPortal } from "react-dom";
 import {
   challengeViolation,
   conflictCellKeys,
@@ -26,15 +28,17 @@ import {
   serializeGame,
   setSelectedRerollDice,
   setMode,
+  wasDieMovedThisTurn,
   wouldPlaceDieConflict
 } from "./game/engine";
 import { groupDiceByValue, type DiceValueGroup } from "./game/diceOrdering";
 import type { ActionMode, DiceValue, Die, GameState, Player, PlayerColor } from "./game/types";
+import { isTabletopViewportSupported } from "./tabletopFit";
 
 const STORAGE_KEY = "disuko-save-v1";
 const DRAG_THRESHOLD_PX = 8;
 const REROLL_STACK_LONG_PRESS_MS = 450;
-const INVALID_MOVE_ANIMATION_MS = 720;
+const INVALID_MOVE_ANIMATION_MS = 2160;
 const logoUrl = `${import.meta.env.BASE_URL}logo.png`;
 const boardIndexes = Array.from({ length: 36 }, (_, index) => ({
   row: Math.floor(index / 6),
@@ -59,6 +63,26 @@ const pipMap: Record<DiceValue, number[]> = {
   5: [1, 2, 4, 6, 7],
   6: [1, 2, 3, 5, 6, 7]
 };
+
+const playerColorCssVars: Record<PlayerColor, string> = {
+  blue: "var(--blue)",
+  red: "var(--red)",
+  green: "var(--green)",
+  yellow: "var(--yellow)"
+};
+
+type SetupStartOptions = {
+  playerCount: 2 | 3 | 4;
+  tabletopMode: boolean;
+};
+
+type TabletopSlot = "top" | "right" | "bottom" | "left";
+
+interface ViewportSize {
+  width: number;
+  height: number;
+  rootFontSizePx: number;
+}
 
 interface InvalidPlacementPreview {
   id: number;
@@ -102,8 +126,8 @@ export default function App(): ReactElement {
     window.localStorage.setItem(STORAGE_KEY, serializeGame(game));
   }, [game]);
 
-  const startGame = (playerCount: 2 | 3 | 4) => {
-    setGame(newGame({ playerCount }));
+  const startGame = ({ playerCount, tabletopMode }: SetupStartOptions) => {
+    setGame(newGame({ playerCount, tabletopMode }));
     setShowSetup(false);
     setShowMenu(false);
   };
@@ -123,7 +147,7 @@ export default function App(): ReactElement {
       onOpenMenu={() => setShowMenu(true)}
       onNewGame={() => setShowSetup(true)}
     >
-      {showMenu ? (
+      {showMenu && !game.tabletopMode ? (
         <MenuOverlay
           game={game}
           onResume={() => setShowMenu(false)}
@@ -151,14 +175,66 @@ function SplashScreen(): ReactElement {
   );
 }
 
+function getViewportSize(): ViewportSize {
+  if (typeof window === "undefined") {
+    return {
+      width: Number.POSITIVE_INFINITY,
+      height: Number.POSITIVE_INFINITY,
+      rootFontSizePx: 16
+    };
+  }
+
+  const rootFontSizePx = Number.parseFloat(window.getComputedStyle(document.documentElement).fontSize);
+
+  return {
+    width: window.innerWidth,
+    height: window.innerHeight,
+    rootFontSizePx: Number.isFinite(rootFontSizePx) && rootFontSizePx > 0 ? rootFontSizePx : 16
+  };
+}
+
+function useViewportSize(): ViewportSize {
+  const [viewportSize, setViewportSize] = useState<ViewportSize>(() => getViewportSize());
+
+  useEffect(() => {
+    const updateViewportSize = () => setViewportSize(getViewportSize());
+
+    updateViewportSize();
+    window.addEventListener("resize", updateViewportSize);
+    window.addEventListener("orientationchange", updateViewportSize);
+
+    return () => {
+      window.removeEventListener("resize", updateViewportSize);
+      window.removeEventListener("orientationchange", updateViewportSize);
+    };
+  }, []);
+
+  return viewportSize;
+}
+
 function SetupScreen({
   onStart,
   onCancel
 }: {
-  onStart: (playerCount: 2 | 3 | 4) => void;
+  onStart: (options: SetupStartOptions) => void;
   onCancel?: () => void;
 }): ReactElement {
-  const [playerCount, setPlayerCount] = useState<2 | 3 | 4>(4);
+  const [playerCount, setPlayerCount] = useState<2 | 3 | 4>(2);
+  const [tabletopMode, setTabletopMode] = useState(false);
+  const viewportSize = useViewportSize();
+  const tabletopViewportSupported = isTabletopViewportSupported({
+    playerCount,
+    viewportWidthPx: viewportSize.width,
+    viewportHeightPx: viewportSize.height,
+    rootFontSizePx: viewportSize.rootFontSizePx
+  });
+  const tabletopBlockedByViewport = playerCount >= 3 && !tabletopViewportSupported;
+
+  useEffect(() => {
+    if (tabletopMode && tabletopBlockedByViewport) {
+      setTabletopMode(false);
+    }
+  }, [tabletopBlockedByViewport, tabletopMode]);
 
   return (
     <main className="setup-screen">
@@ -183,13 +259,31 @@ function SetupScreen({
           ))}
         </div>
 
+        {tabletopBlockedByViewport ? (
+          <p className="setup-warning" role="status">
+            This device dimensions are not compatible with tabletop mode for more than 2 players.
+          </p>
+        ) : (
+          <label className={`tabletop-toggle ${tabletopMode ? "is-active" : ""}`}>
+            <span>Table top mode</span>
+            <input
+              type="checkbox"
+              checked={tabletopMode}
+              onChange={(event) => setTabletopMode(event.currentTarget.checked)}
+            />
+            <span className="toggle-track" aria-hidden="true">
+              <span />
+            </span>
+          </label>
+        )}
+
         <div className="setup-actions">
           {onCancel ? (
             <button className="secondary-button" type="button" onClick={onCancel}>
               Cancel
             </button>
           ) : null}
-          <button className="primary-button" type="button" onClick={() => onStart(playerCount)}>
+          <button className="primary-button" type="button" onClick={() => onStart({ playerCount, tabletopMode })}>
             Start game
           </button>
         </div>
@@ -242,7 +336,9 @@ function GameScreen({
   const suppressNextClick = useRef(false);
   const activePlayer = currentPlayer(game);
   const actionCountLabel = `${game.actionCredits} action${game.actionCredits === 1 ? "" : "s"}`;
+  const trayStatusLabel = game.mode === "reroll" ? "Select the dice to re-roll" : actionCountLabel;
   const activePlayerNumber = game.currentPlayerIndex + 1;
+  const activePlayerColor = playerColorCssVars[activePlayer.color];
   const conflictDice = useMemo(() => conflictDieIds(game), [game]);
   const conflictCells = useMemo(() => conflictCellKeys(game), [game]);
   const recentMoveHighlights = useMemo(() => {
@@ -264,6 +360,7 @@ function GameScreen({
     () => groupDiceByValue(offBoardDice(game, activePlayer.id)),
     [game, activePlayer.id]
   );
+  const selectedDieIdSet = useMemo(() => new Set(game.selectedDieIds), [game.selectedDieIds]);
   const transientDieId = dragPreview?.die.id ?? invalidPlacement?.die.id ?? null;
 
   const clearInvalidPlacement = () => {
@@ -301,6 +398,7 @@ function GameScreen({
         window.clearTimeout(invalidPlacementTimer.current);
       }
 
+      clearStackLongPress();
       clearDragListeners();
     };
   }, []);
@@ -329,9 +427,9 @@ function GameScreen({
       setOpenRerollValue(null);
       setHasExplicitRerollSelection(false);
       clearStackLongPress();
-      setTurnPromptOpen(true);
+      setTurnPromptOpen(!game.tabletopMode);
     }
-  }, [game.seed, game.turnNumber, game.currentPlayerIndex, game.phase]);
+  }, [game.seed, game.turnNumber, game.currentPlayerIndex, game.phase, game.tabletopMode]);
 
   useEffect(() => {
     if (game.mode !== "reroll") {
@@ -361,7 +459,7 @@ function GameScreen({
     const handlePointerDown = (event: PointerEvent) => {
       const target = event.target;
 
-      if (target instanceof Element && target.closest(".dice-tray")) {
+      if (target instanceof Element && target.closest(".dice-tray, .stack-reroll-picker")) {
         return;
       }
 
@@ -393,7 +491,9 @@ function GameScreen({
     }
 
     const cell = document.querySelector<HTMLElement>(`.board-cell[data-row="${row}"][data-col="${col}"]`);
-    const tray = document.querySelector<HTMLElement>(".dice-tray");
+    const tray =
+      document.querySelector<HTMLElement>(`.dice-tray[data-player-id="${activePlayer.id}"]`) ??
+      document.querySelector<HTMLElement>(".dice-tray");
     const cellRect = cell?.getBoundingClientRect();
     const trayRect = tray?.getBoundingClientRect();
     const startX = cellRect ? cellRect.left + cellRect.width / 2 : window.innerWidth / 2;
@@ -438,13 +538,8 @@ function GameScreen({
     }
 
     if (game.mode === "reroll") {
-      if (group.count === 1) {
-        setRerollStackCount(group, selectedCountForGroup(group) === 1 ? 0 : 1);
-        setOpenRerollValue(null);
-        return;
-      }
-
-      setOpenRerollValue((value) => (value === group.value ? null : group.value));
+      setRerollStackCount(group, selectedCountForGroup(group) + 1);
+      setOpenRerollValue(group.count > 1 ? group.value : null);
       return;
     }
 
@@ -457,7 +552,13 @@ function GameScreen({
     }
 
     clearStackLongPress();
-    event.currentTarget.setPointerCapture(event.pointerId);
+
+    try {
+      event.currentTarget.setPointerCapture(event.pointerId);
+    } catch {
+      // The timer still handles the hold if pointer capture is unavailable.
+    }
+
     stackLongPress.current = {
       pointerId: event.pointerId,
       value: group.value,
@@ -536,6 +637,10 @@ function GameScreen({
       return;
     }
 
+    if (isOnBoard(die) && wasDieMovedThisTurn(game, die.id)) {
+      return;
+    }
+
     onCommit(selectDie(setMode(game, "move"), die.id));
   };
 
@@ -584,6 +689,10 @@ function GameScreen({
 
   const handleDiePointerDown = (event: ReactPointerEvent<HTMLElement>, die: Die) => {
     if (game.phase === "won") {
+      return;
+    }
+
+    if (isOnBoard(die) && wasDieMovedThisTurn(game, die.id)) {
       return;
     }
 
@@ -704,62 +813,97 @@ function GameScreen({
     setHasExplicitRerollSelection(false);
   };
 
-  return (
-    <main className="game-shell">
-      <header className="game-header">
-        <button className="round-icon" type="button" aria-label="Open menu" onClick={handleOpenMenu}>
-          <span />
-          <span />
-          <span />
-        </button>
-        <img className="game-logo" src={logoUrl} alt="Disuko" />
-        <button className="new-game-chip" type="button" onClick={handleNewGame}>
-          New
-        </button>
-      </header>
+  const board = (
+    <Board
+      game={game}
+      conflictDice={conflictDice}
+      conflictCells={conflictCells}
+      recentMoveHighlights={recentMoveHighlights}
+      draggingDieId={transientDieId}
+      tabletopMode={game.tabletopMode}
+      activePlayerColor={activePlayerColor}
+      onCell={handleCell}
+      onDie={handleBoardDie}
+      onDiePointerDown={handleDiePointerDown}
+      onDiePointerMove={handleDiePointerMove}
+      onDiePointerUp={handleDiePointerUp}
+      onDiePointerCancel={handleDiePointerCancel}
+    />
+  );
 
-      <OpponentTrayStrip game={game} activePlayer={activePlayer} hiddenDieId={transientDieId} />
+  const renderPlayerTray = (player: Player) => {
+    const isActive = player.id === activePlayer.id;
+    const trayMode = isActive ? game.mode : "place";
+    const trayGroups = isActive ? currentTrayGroups : groupDiceByValue(offBoardDice(game, player.id));
+    const disabled = !isActive || game.phase === "won";
 
-      <Board
-        game={game}
-        conflictDice={conflictDice}
-        conflictCells={conflictCells}
-        recentMoveHighlights={recentMoveHighlights}
+    return (
+      <DiceTray
+        groups={trayGroups}
+        selectedIds={isActive ? selectedDieIdSet : new Set<string>()}
+        player={player}
+        mode={trayMode}
         draggingDieId={transientDieId}
-        onCell={handleCell}
-        onDie={handleBoardDie}
+        openRerollValue={isActive ? openRerollValue : null}
+        actionCountLabel={isActive ? trayStatusLabel : "0 actions"}
+        rollLabel={isActive && game.mode === "reroll" ? `Reroll ${game.selectedDieIds.length}` : "Roll"}
+        rollActive={isActive && game.mode === "reroll"}
+        disabled={disabled}
+        hidePlayerName={game.tabletopMode}
+        className={isActive ? "is-active-player" : undefined}
+        onGroup={handleTrayGroup}
+        onRoll={handleReroll}
+        onSetRerollCount={setRerollStackCount}
+        onRerollStackPointerDown={handleRerollStackPointerDown}
+        onRerollStackPointerMove={handleRerollStackPointerMove}
+        onRerollStackPointerUp={handleRerollStackPointerUp}
+        onRerollStackPointerCancel={handleRerollStackPointerCancel}
         onDiePointerDown={handleDiePointerDown}
         onDiePointerMove={handleDiePointerMove}
         onDiePointerUp={handleDiePointerUp}
         onDiePointerCancel={handleDiePointerCancel}
       />
+    );
+  };
 
-      <div className="side-stack">
-        <section className="control-dock" aria-label="Game controls">
-          <DiceTray
-            groups={currentTrayGroups}
-            selectedIds={new Set(game.selectedDieIds)}
-            player={activePlayer}
-            mode={game.mode}
-            draggingDieId={transientDieId}
-            openRerollValue={openRerollValue}
-            actionCountLabel={actionCountLabel}
-            rollLabel={game.mode === "reroll" ? "Reroll" : "Roll"}
-            rollActive={game.mode === "reroll"}
-            onGroup={handleTrayGroup}
-            onRoll={handleReroll}
-            onSetRerollCount={setRerollStackCount}
-            onRerollStackPointerDown={handleRerollStackPointerDown}
-            onRerollStackPointerMove={handleRerollStackPointerMove}
-            onRerollStackPointerUp={handleRerollStackPointerUp}
-            onRerollStackPointerCancel={handleRerollStackPointerCancel}
-            onDiePointerDown={handleDiePointerDown}
-            onDiePointerMove={handleDiePointerMove}
-            onDiePointerUp={handleDiePointerUp}
-            onDiePointerCancel={handleDiePointerCancel}
-          />
-        </section>
-      </div>
+  return (
+    <main
+      className={`game-shell ${game.tabletopMode ? "is-tabletop" : ""}`}
+      style={game.tabletopMode ? ({ "--active-player-color": activePlayerColor } as CSSProperties) : undefined}
+    >
+      {game.tabletopMode ? (
+        <header className="tabletop-tools" aria-label="Game controls">
+          <button className="new-game-chip" type="button" onClick={handleNewGame}>
+            New
+          </button>
+        </header>
+      ) : (
+        <>
+          <header className="game-header">
+            <button className="round-icon" type="button" aria-label="Open menu" onClick={handleOpenMenu}>
+              <span />
+              <span />
+              <span />
+            </button>
+            <img className="game-logo" src={logoUrl} alt="Disuko" />
+            <button className="new-game-chip" type="button" onClick={handleNewGame}>
+              New
+            </button>
+          </header>
+
+          <OpponentTrayStrip game={game} activePlayer={activePlayer} hiddenDieId={transientDieId} />
+
+          {board}
+
+          <div className="side-stack">
+            <section className="control-dock" aria-label="Game controls">
+              {renderPlayerTray(activePlayer)}
+            </section>
+          </div>
+        </>
+      )}
+
+      {game.tabletopMode ? <TabletopPlayArea game={game} board={board} renderTray={renderPlayerTray} /> : null}
 
       {dragPreview ? (
         <div className="drag-preview" style={{ left: dragPreview.x, top: dragPreview.y }} aria-hidden="true">
@@ -789,13 +933,60 @@ function GameScreen({
         </>
       ) : null}
 
-      {turnPromptOpen && game.phase === "playing" ? (
+      {turnPromptOpen && game.phase === "playing" && !game.tabletopMode ? (
         <TurnStartPrompt player={activePlayer} playerNumber={activePlayerNumber} onPlay={() => setTurnPromptOpen(false)} />
       ) : null}
 
       {children}
     </main>
   );
+}
+
+function TabletopPlayArea({
+  game,
+  board,
+  renderTray
+}: {
+  game: GameState;
+  board: ReactElement;
+  renderTray: (player: Player) => ReactElement;
+}): ReactElement {
+  const activePlayer = currentPlayer(game);
+  const slots = tabletopSlotsFor(game.players.length);
+
+  return (
+    <section className={`tabletop-play-area tabletop-count-${game.players.length}`} aria-label="Table top play area">
+      <div className="tabletop-board-slot">{board}</div>
+      {game.players.map((player, index) => {
+        const slot = slots[index] ?? "bottom";
+        const sideSlot = slot === "left" || slot === "right";
+
+        return (
+          <div
+            className={`tabletop-tray-slot tabletop-slot-${slot} ${sideSlot ? "is-side" : ""} ${
+              player.id === activePlayer.id ? "is-active" : ""
+            }`}
+            key={player.id}
+            style={{ "--tray-player-color": playerColorCssVars[player.color] } as CSSProperties}
+          >
+            <div className="tabletop-tray-inner">{renderTray(player)}</div>
+          </div>
+        );
+      })}
+    </section>
+  );
+}
+
+function tabletopSlotsFor(playerCount: number): TabletopSlot[] {
+  if (playerCount === 2) {
+    return ["bottom", "top"];
+  }
+
+  if (playerCount === 3) {
+    return ["bottom", "left", "right"];
+  }
+
+  return ["bottom", "top", "left", "right"];
 }
 
 function TurnStartPrompt({
@@ -858,6 +1049,8 @@ function Board({
   conflictCells,
   recentMoveHighlights,
   draggingDieId,
+  tabletopMode = false,
+  activePlayerColor,
   onCell,
   onDie,
   onDiePointerDown,
@@ -870,6 +1063,8 @@ function Board({
   conflictCells: Set<string>;
   recentMoveHighlights: Map<string, PlayerColor>;
   draggingDieId: string | null;
+  tabletopMode?: boolean;
+  activePlayerColor?: string;
   onCell: (row: number, col: number) => void;
   onDie: (die: Die) => void;
   onDiePointerDown: (event: ReactPointerEvent<HTMLElement>, die: Die) => void;
@@ -878,7 +1073,11 @@ function Board({
   onDiePointerCancel: (event: ReactPointerEvent<HTMLElement>) => void;
 }): ReactElement {
   return (
-    <section className="board-wrap" aria-label="Disuko board">
+    <section
+      className={`board-wrap ${tabletopMode ? "is-tabletop-board" : ""}`}
+      style={tabletopMode ? ({ "--active-player-color": activePlayerColor } as CSSProperties) : undefined}
+      aria-label="Disuko board"
+    >
       <div className="board-grid" role="grid" aria-label="6 by 6 Disuko board">
         {boardIndexes.map(({ row, col }) => {
           const die = getDieAt(game, row, col);
@@ -938,6 +1137,9 @@ function DiceTray({
   actionCountLabel,
   rollLabel,
   rollActive,
+  disabled = false,
+  hidePlayerName = false,
+  className,
   onGroup,
   onRoll,
   onSetRerollCount,
@@ -959,6 +1161,9 @@ function DiceTray({
   actionCountLabel: string;
   rollLabel: string;
   rollActive: boolean;
+  disabled?: boolean;
+  hidePlayerName?: boolean;
+  className?: string;
   onGroup: (group: DiceValueGroup) => void;
   onRoll: () => void;
   onSetRerollCount: (group: DiceValueGroup, count: number) => void;
@@ -972,9 +1177,13 @@ function DiceTray({
   onDiePointerCancel: (event: ReactPointerEvent<HTMLElement>) => void;
 }): ReactElement {
   return (
-    <section className="dice-tray" aria-label={`${player.name}'s dice tray`}>
+    <section
+      className={`dice-tray ${disabled ? "is-disabled" : ""} ${className ?? ""}`}
+      data-player-id={player.id}
+      aria-label={hidePlayerName ? `${player.color} dice tray` : `${player.name}'s dice tray`}
+    >
       <div className="tray-status-row" aria-live="polite">
-        <span>{actionCountLabel}</span>
+        <span className="tray-action-counter">{actionCountLabel}</span>
       </div>
       <div className="tray-control-row">
         <DiceRail
@@ -984,6 +1193,7 @@ function DiceTray({
           emptyLabel="All dice are on the board."
           rerollMode={mode === "reroll"}
           openRerollValue={openRerollValue}
+          disabled={disabled}
           onGroup={onGroup}
           onSetRerollCount={onSetRerollCount}
           onRerollStackPointerDown={onRerollStackPointerDown}
@@ -1000,6 +1210,7 @@ function DiceTray({
           icon={<MiniDieIcon />}
           label={rollLabel}
           active={rollActive}
+          disabled={disabled}
           className="tray-roll-button"
           onClick={onRoll}
         />
@@ -1015,6 +1226,7 @@ function DiceRail({
   emptyLabel,
   className,
   readOnly = false,
+  disabled = false,
   rerollMode = false,
   openRerollValue = null,
   onGroup,
@@ -1034,6 +1246,7 @@ function DiceRail({
   emptyLabel: string;
   className?: string;
   readOnly?: boolean;
+  disabled?: boolean;
   rerollMode?: boolean;
   openRerollValue?: DiceValue | null;
   onGroup?: (group: DiceValueGroup) => void;
@@ -1047,6 +1260,8 @@ function DiceRail({
   onDiePointerUp?: (event: ReactPointerEvent<HTMLElement>) => void;
   onDiePointerCancel?: (event: ReactPointerEvent<HTMLElement>) => void;
 }): ReactElement {
+  const activeRerollButton = useRef<HTMLButtonElement | null>(null);
+  const [pickerPosition, setPickerPosition] = useState<{ left: number; top: number } | null>(null);
   const visibleGroups = groups
     .map((group) => {
       const visibleDice = draggingDieId ? group.dice.filter((die) => die.id !== draggingDieId) : group.dice;
@@ -1058,6 +1273,44 @@ function DiceRail({
       };
     })
     .filter((group) => Boolean(group.representativeDie));
+  const openGroup =
+    rerollMode && openRerollValue !== null
+      ? groups.find((group) => group.value === openRerollValue && group.count > 1)
+      : undefined;
+  const openSelectedCount = openGroup ? openGroup.dice.filter((die) => selectedIds?.has(die.id)).length : 0;
+
+  useLayoutEffect(() => {
+    if (!rerollMode || openRerollValue === null || !activeRerollButton.current) {
+      setPickerPosition(null);
+      return;
+    }
+
+    const updatePickerPosition = () => {
+      const rect = activeRerollButton.current?.getBoundingClientRect();
+
+      if (!rect) {
+        setPickerPosition(null);
+        return;
+      }
+
+      const pickerHalfWidth = 58;
+      const centeredLeft = rect.left + rect.width / 2;
+
+      setPickerPosition({
+        left: Math.min(Math.max(centeredLeft, pickerHalfWidth), window.innerWidth - pickerHalfWidth),
+        top: Math.max(0, rect.top - 6)
+      });
+    };
+
+    updatePickerPosition();
+    window.addEventListener("resize", updatePickerPosition);
+    window.addEventListener("scroll", updatePickerPosition, true);
+
+    return () => {
+      window.removeEventListener("resize", updatePickerPosition);
+      window.removeEventListener("scroll", updatePickerPosition, true);
+    };
+  }, [openRerollValue, rerollMode, openSelectedCount, visibleGroups.length]);
 
   return (
     <div className={`dice-rail-groove ${readOnly ? "is-readonly" : ""} ${className ?? ""}`}>
@@ -1068,12 +1321,7 @@ function DiceRail({
           const selectedCount = group.dice.filter((die) => selectedIds?.has(die.id)).length;
           const selected = selectedCount > 0;
           const displayCount = rerollMode ? group.count : dice.length;
-          const multiplier =
-            rerollMode && selectedCount > 0 && selectedCount < group.count
-              ? `${selectedCount}/${group.count}`
-              : displayCount > 1
-                ? displayCount
-                : undefined;
+          const multiplier = displayCount > 1 ? displayCount : undefined;
 
           if (readOnly || !onGroup || !onDiePointerDown || !onDiePointerMove || !onDiePointerUp || !onDiePointerCancel) {
             return (
@@ -1083,8 +1331,10 @@ function DiceRail({
             );
           }
 
+          const pickerOpen = rerollMode && group.count > 1 && openRerollValue === group.value && onSetRerollCount;
+
           return (
-            <span className={`rail-stack ${openRerollValue === group.value ? "has-picker" : ""}`} key={group.value}>
+            <span className={`rail-stack ${pickerOpen ? "has-picker" : ""}`} key={group.value}>
               <button
                 aria-label={
                   rerollMode
@@ -1092,29 +1342,54 @@ function DiceRail({
                     : `${group.value}`
                 }
                 className={`rail-die ${selected ? "is-selected" : ""}`}
+                ref={pickerOpen ? activeRerollButton : undefined}
                 type="button"
-                onClick={() => onGroup(group)}
+                disabled={disabled}
+                onClick={disabled ? undefined : () => onGroup(group)}
                 onPointerDown={(event) =>
-                  rerollMode && onRerollStackPointerDown
-                    ? onRerollStackPointerDown(event, group)
-                    : onDiePointerDown(event, representativeDie)
+                  disabled
+                    ? undefined
+                    : rerollMode && onRerollStackPointerDown
+                      ? onRerollStackPointerDown(event, group)
+                      : onDiePointerDown(event, representativeDie)
                 }
-                onPointerMove={rerollMode && onRerollStackPointerMove ? onRerollStackPointerMove : onDiePointerMove}
-                onPointerUp={rerollMode && onRerollStackPointerUp ? onRerollStackPointerUp : onDiePointerUp}
+                onPointerMove={
+                  disabled ? undefined : rerollMode && onRerollStackPointerMove ? onRerollStackPointerMove : onDiePointerMove
+                }
+                onPointerUp={
+                  disabled ? undefined : rerollMode && onRerollStackPointerUp ? onRerollStackPointerUp : onDiePointerUp
+                }
                 onPointerCancel={
-                  rerollMode && onRerollStackPointerCancel ? onRerollStackPointerCancel : onDiePointerCancel
+                  disabled
+                    ? undefined
+                    : rerollMode && onRerollStackPointerCancel
+                      ? onRerollStackPointerCancel
+                      : onDiePointerCancel
                 }
-                onPointerLeave={rerollMode && onRerollStackPointerCancel ? onRerollStackPointerCancel : undefined}
+                onPointerLeave={
+                  disabled ? undefined : rerollMode && onRerollStackPointerCancel ? onRerollStackPointerCancel : undefined
+                }
               >
                 <DieFace die={representativeDie} selected={selected} compact multiplier={multiplier} />
               </button>
-              {rerollMode && openRerollValue === group.value && onSetRerollCount ? (
-                <StackRerollPicker group={group} selectedCount={selectedCount} onSetCount={onSetRerollCount} />
-              ) : null}
             </span>
           );
         })
       )}
+      {openGroup && onSetRerollCount && pickerPosition
+        ? createPortal(
+            <StackRerollPicker
+              group={openGroup}
+              selectedCount={openSelectedCount}
+              style={{
+                left: pickerPosition.left,
+                top: pickerPosition.top
+              }}
+              onSetCount={onSetRerollCount}
+            />,
+            document.body
+          )
+        : null}
     </div>
   );
 }
@@ -1122,10 +1397,12 @@ function DiceRail({
 function StackRerollPicker({
   group,
   selectedCount,
+  style,
   onSetCount
 }: {
   group: DiceValueGroup;
   selectedCount: number;
+  style?: CSSProperties;
   onSetCount: (group: DiceValueGroup, count: number) => void;
 }): ReactElement {
   return (
@@ -1133,6 +1410,7 @@ function StackRerollPicker({
       className="stack-reroll-picker"
       role="group"
       aria-label={`Choose how many ${group.value}s to reroll`}
+      style={style}
       onPointerDown={(event) => event.stopPropagation()}
       onClick={(event) => event.stopPropagation()}
     >
@@ -1144,12 +1422,6 @@ function StackRerollPicker({
       </strong>
       <button type="button" aria-label="Select more dice" onClick={() => onSetCount(group, selectedCount + 1)}>
         +
-      </button>
-      <button type="button" onClick={() => onSetCount(group, group.count)}>
-        All
-      </button>
-      <button type="button" onClick={() => onSetCount(group, 0)}>
-        Clear
       </button>
     </div>
   );
@@ -1199,26 +1471,32 @@ function ActionButton({
   icon,
   label,
   active,
+  disabled = false,
   className,
   onClick
 }: {
   color: "blue" | "green" | "gold" | "red";
-  icon: ReactNode;
+  icon?: ReactNode;
   label: string;
   active?: boolean;
+  disabled?: boolean;
   className?: string;
   onClick: () => void;
 }): ReactElement {
   return (
     <button
       className={`action-button action-${color} ${active ? "is-active" : ""} ${className ?? ""}`}
+      aria-label={label}
       type="button"
+      disabled={disabled}
       onClick={onClick}
     >
-      <span className="action-icon" aria-hidden="true">
-        {icon}
-      </span>
-      <span>{label}</span>
+      {icon ? (
+        <span className="action-icon" aria-hidden="true">
+          {icon}
+        </span>
+      ) : null}
+      <span className={icon ? "action-label" : undefined}>{label}</span>
     </button>
   );
 }
@@ -1283,9 +1561,7 @@ function DieFace({
           }}
         />
       ))}
-      {multiplier ? (
-        <span className="die-multiplier">{typeof multiplier === "number" ? `${multiplier}x` : multiplier}</span>
-      ) : null}
+      {multiplier ? <span className="die-multiplier">{multiplier}</span> : null}
     </span>
   );
 }

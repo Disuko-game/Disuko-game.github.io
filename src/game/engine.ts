@@ -62,6 +62,7 @@ export function newGame(options: NewGameOptions): GameState {
     rngState,
     players,
     dice,
+    tabletopMode: options.tabletopMode ?? false,
     currentPlayerIndex: 0,
     turnNumber: 1,
     actionCredits: 1,
@@ -104,6 +105,18 @@ export function wouldPlaceDieConflict(state: GameState, dieId: string, row: numb
 
     return candidate.row === row || candidate.col === col || boxIndex(candidate.row as number, candidate.col as number) === targetBox;
   });
+}
+
+export function wasDieMovedThisTurn(state: GameState, dieId: string): boolean {
+  const player = currentPlayer(state);
+
+  return (state.boardChanges ?? []).some(
+    (change) =>
+      change.type === "move" &&
+      change.dieId === dieId &&
+      change.playerId === player.id &&
+      change.turnNumber === state.turnNumber
+  );
 }
 
 export function setMode(state: GameState, mode: ActionMode): GameState {
@@ -191,6 +204,10 @@ export function moveDie(state: GameState, dieId: string, row: number, col: numbe
 
   if (!die || !isOnBoard(die)) {
     return withMessage(next, "Select a board die to move.");
+  }
+
+  if (wasDieMovedThisTurn(next, die.id)) {
+    return withMessage(next, "That die has already been moved this turn.");
   }
 
   if (!isInBounds(row, col) || getDieAt(next, row, col)) {
@@ -412,6 +429,7 @@ export function restoreGame(serialized: string): GameState {
     rngState: parsed.rngState ?? seedToState("restored"),
     players: parsed.players,
     dice: parsed.dice,
+    tabletopMode: parsed.tabletopMode ?? false,
     currentPlayerIndex: parsed.currentPlayerIndex ?? 0,
     turnNumber: parsed.turnNumber ?? 1,
     actionCredits: parsed.actionCredits ?? 1,

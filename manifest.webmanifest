@@ -1,8 +1,10 @@
 {
+  "id": "./",
   "name": "Disuko",
   "short_name": "Disuko",
   "description": "A mobile pass-and-play dice Sudoku game.",
-  "start_url": ".",
+  "start_url": "./",
+  "scope": "./",
   "display": "standalone",
   "background_color": "#7a3c18",
   "theme_color": "#6f3517",

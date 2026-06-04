@@ -70,6 +70,7 @@ export interface GameState {
   rngState: number;
   players: Player[];
   dice: Die[];
+  tabletopMode: boolean;
   currentPlayerIndex: number;
   turnNumber: number;
   actionCredits: number;
@@ -87,4 +88,5 @@ export interface GameState {
 export interface NewGameOptions {
   playerCount: 2 | 3 | 4;
   seed?: string;
+  tabletopMode?: boolean;
 }

@@ -16,6 +16,7 @@ import {
   selectDie,
   setSelectedRerollDice,
   serializeGame,
+  wasDieMovedThisTurn,
   wouldPlaceDieConflict
 } from "./engine";
 import { boxIndex, cellsForBox } from "./geometry";
@@ -45,6 +46,19 @@ describe("Disuko rules engine", () => {
       "Player 3",
       "Player 4"
     ]);
+  });
+
+  it("defaults tabletop mode off and persists the setup choice", () => {
+    const standardGame = newGame({ playerCount: 2, seed: "standard-mode" });
+    const tabletopGame = newGame({ playerCount: 4, seed: "tabletop-mode", tabletopMode: true });
+    const legacySave = JSON.parse(serializeGame(standardGame)) as Record<string, unknown>;
+
+    delete legacySave.tabletopMode;
+
+    expect(standardGame.tabletopMode).toBe(false);
+    expect(tabletopGame.tabletopMode).toBe(true);
+    expect(restoreGame(serializeGame(tabletopGame)).tabletopMode).toBe(true);
+    expect(restoreGame(JSON.stringify(legacySave)).tabletopMode).toBe(false);
   });
 
   it("detects row, column, and 2x3 box conflicts already on the board", () => {
@@ -287,6 +301,42 @@ describe("Disuko rules engine", () => {
     expect(movedDie?.row).toBe(1);
     expect(movedDie?.col).toBe(1);
     expect(next.currentPlayerIndex).toBe(1);
+  });
+
+  it("does not move the same die more than once in a turn", () => {
+    const game = newGame({ playerCount: 2, seed: "move-once-per-turn" });
+    const die = game.dice.find((candidate) => candidate.ownerId === "p1")!;
+    die.row = 0;
+    die.col = 0;
+    game.actionCredits = 2;
+
+    const firstMove = moveDie(game, die.id, 1, 1);
+    const secondMove = moveDie(firstMove, die.id, 2, 2);
+    const movedDie = secondMove.dice.find((candidate) => candidate.id === die.id);
+
+    expect(wasDieMovedThisTurn(firstMove, die.id)).toBe(true);
+    expect(movedDie?.row).toBe(1);
+    expect(movedDie?.col).toBe(1);
+    expect(secondMove.currentPlayerIndex).toBe(0);
+    expect(secondMove.actionCredits).toBe(1);
+    expect(secondMove.message).toBe("That die has already been moved this turn.");
+  });
+
+  it("allows the same die to move again on a later turn", () => {
+    const game = newGame({ playerCount: 2, seed: "move-later-turn" });
+    const die = game.dice.find((candidate) => candidate.ownerId === "p1")!;
+    die.row = 0;
+    die.col = 0;
+    game.actionCredits = 2;
+
+    const firstMove = moveDie(game, die.id, 1, 1);
+    const laterTurn = endAction(firstMove);
+    const secondMove = moveDie(laterTurn, die.id, 2, 2);
+    const movedDie = secondMove.dice.find((candidate) => candidate.id === die.id);
+
+    expect(wasDieMovedThisTurn(laterTurn, die.id)).toBe(false);
+    expect(movedDie?.row).toBe(2);
+    expect(movedDie?.col).toBe(2);
   });
 
   it("selects and moves another player's board die", () => {
