@@ -813,6 +813,13 @@ function GameScreen({
     setHasExplicitRerollSelection(false);
   };
 
+  const handleCancelReroll = () => {
+    setOpenRerollValue(null);
+    setHasExplicitRerollSelection(false);
+    clearStackLongPress();
+    onCommit(setMode(game, "place"));
+  };
+
   const board = (
     <Board
       game={game}
@@ -853,6 +860,7 @@ function GameScreen({
         className={isActive ? "is-active-player" : undefined}
         onGroup={handleTrayGroup}
         onRoll={handleReroll}
+        onCancelReroll={handleCancelReroll}
         onSetRerollCount={setRerollStackCount}
         onRerollStackPointerDown={handleRerollStackPointerDown}
         onRerollStackPointerMove={handleRerollStackPointerMove}
@@ -1142,6 +1150,7 @@ function DiceTray({
   className,
   onGroup,
   onRoll,
+  onCancelReroll,
   onSetRerollCount,
   onRerollStackPointerDown,
   onRerollStackPointerMove,
@@ -1166,6 +1175,7 @@ function DiceTray({
   className?: string;
   onGroup: (group: DiceValueGroup) => void;
   onRoll: () => void;
+  onCancelReroll: () => void;
   onSetRerollCount: (group: DiceValueGroup, count: number) => void;
   onRerollStackPointerDown: (event: ReactPointerEvent<HTMLElement>, group: DiceValueGroup) => void;
   onRerollStackPointerMove: (event: ReactPointerEvent<HTMLElement>) => void;
@@ -1185,6 +1195,11 @@ function DiceTray({
       <div className="tray-status-row" aria-live="polite">
         <span className="tray-action-counter">{actionCountLabel}</span>
       </div>
+      {mode === "reroll" && !disabled ? (
+        <button className="reroll-cancel-button" type="button" onClick={onCancelReroll}>
+          Cancel
+        </button>
+      ) : null}
       <div className="tray-control-row">
         <DiceRail
           groups={groups}
