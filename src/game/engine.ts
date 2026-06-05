@@ -107,6 +107,24 @@ export function wouldPlaceDieConflict(state: GameState, dieId: string, row: numb
   });
 }
 
+export function wouldMoveDieConflict(state: GameState, dieId: string, row: number, col: number): boolean {
+  const die = state.dice.find((candidate) => candidate.id === dieId);
+
+  if (!die || !isOnBoard(die) || !isInBounds(row, col) || getDieAt(state, row, col)) {
+    return false;
+  }
+
+  const targetBox = boxIndex(row, col);
+
+  return state.dice.some((candidate) => {
+    if (candidate.id === die.id || !isOnBoard(candidate) || candidate.value !== die.value) {
+      return false;
+    }
+
+    return candidate.row === row || candidate.col === col || boxIndex(candidate.row as number, candidate.col as number) === targetBox;
+  });
+}
+
 export function wasDieMovedThisTurn(state: GameState, dieId: string): boolean {
   const player = currentPlayer(state);
 
@@ -212,6 +230,10 @@ export function moveDie(state: GameState, dieId: string, row: number, col: numbe
 
   if (!isInBounds(row, col) || getDieAt(next, row, col)) {
     return withMessage(next, "Move to an empty board space.");
+  }
+
+  if (wouldMoveDieConflict(next, die.id, row, col)) {
+    return resolveInvalidMove(next, die.id, player.id);
   }
 
   die.row = row;
@@ -533,11 +555,19 @@ function resolveAction(
 }
 
 function resolveInvalidPlacement(state: GameState, dieId: string, playerId: string): GameState {
+  return resolveInvalidAction(state, "place", dieId, playerId);
+}
+
+function resolveInvalidMove(state: GameState, dieId: string, playerId: string): GameState {
+  return resolveInvalidAction(state, "move", dieId, playerId);
+}
+
+function resolveInvalidAction(state: GameState, type: "place" | "move", dieId: string, playerId: string): GameState {
   state.actionCredits = Math.max(0, state.actionCredits - 1);
   state.selectedDieIds = [];
   state.challengeRolls = undefined;
   state.lastAction = {
-    type: "place",
+    type,
     playerId,
     dieId,
     completedKeys: [],

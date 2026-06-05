@@ -17,6 +17,7 @@ import {
   setSelectedRerollDice,
   serializeGame,
   wasDieMovedThisTurn,
+  wouldMoveDieConflict,
   wouldPlaceDieConflict
 } from "./engine";
 import { boxIndex, cellsForBox } from "./geometry";
@@ -92,6 +93,23 @@ describe("Disuko rules engine", () => {
     expect(wouldPlaceDieConflict(game, trayDie.id, 3, 3)).toBe(false);
   });
 
+  it("reports conflicts before a board die is moved", () => {
+    const game = newGame({ playerCount: 2, seed: "would-move-conflict" });
+    const [placedDie, movingDie] = game.dice.filter((die) => die.ownerId === "p1");
+
+    placedDie.value = 2;
+    placedDie.row = 0;
+    placedDie.col = 0;
+    movingDie.value = 2;
+    movingDie.row = 3;
+    movingDie.col = 3;
+
+    expect(wouldMoveDieConflict(game, movingDie.id, 0, 5)).toBe(true);
+    expect(wouldMoveDieConflict(game, movingDie.id, 5, 0)).toBe(true);
+    expect(wouldMoveDieConflict(game, movingDie.id, 2, 1)).toBe(true);
+    expect(wouldMoveDieConflict(game, movingDie.id, 3, 4)).toBe(false);
+  });
+
   it("auto-undoes an invalid placement and consumes that action", () => {
     const game = newGame({ playerCount: 2, seed: "invalid-placement" });
     const [placedDie, trayDie] = game.dice.filter((die) => die.ownerId === "p1");
@@ -133,6 +151,57 @@ describe("Disuko rules engine", () => {
 
     expect(returnedDie?.row).toBeNull();
     expect(returnedDie?.col).toBeNull();
+    expect(next.currentPlayerIndex).toBe(0);
+    expect(next.actionCredits).toBe(1);
+    expect(next.message).toBe("invalid move");
+  });
+
+  it("auto-undoes an invalid move and consumes that action", () => {
+    const game = newGame({ playerCount: 2, seed: "invalid-move" });
+    const [placedDie, movingDie] = game.dice.filter((die) => die.ownerId === "p1");
+
+    placedDie.value = 4;
+    placedDie.row = 0;
+    placedDie.col = 0;
+    movingDie.value = 4;
+    movingDie.row = 3;
+    movingDie.col = 3;
+
+    const next = moveDie(game, movingDie.id, 0, 1);
+    const returnedDie = next.dice.find((die) => die.id === movingDie.id);
+
+    expect(returnedDie?.row).toBe(3);
+    expect(returnedDie?.col).toBe(3);
+    expect(next.message).toBe("invalid move");
+    expect(next.currentPlayerIndex).toBe(1);
+    expect(next.actionCredits).toBe(1);
+    expect(next.lastAction).toMatchObject({
+      type: "move",
+      playerId: "p1",
+      dieId: movingDie.id,
+      completedKeys: [],
+      conflictDieIds: []
+    });
+    expect(detectConflicts(next)).toHaveLength(0);
+  });
+
+  it("spends one combo action on an invalid move without passing the turn", () => {
+    const game = newGame({ playerCount: 2, seed: "invalid-move-combo-spend" });
+    const [placedDie, movingDie] = game.dice.filter((die) => die.ownerId === "p1");
+
+    game.actionCredits = 2;
+    placedDie.value = 5;
+    placedDie.row = 1;
+    placedDie.col = 1;
+    movingDie.value = 5;
+    movingDie.row = 4;
+    movingDie.col = 4;
+
+    const next = moveDie(game, movingDie.id, 2, 0);
+    const returnedDie = next.dice.find((die) => die.id === movingDie.id);
+
+    expect(returnedDie?.row).toBe(4);
+    expect(returnedDie?.col).toBe(4);
     expect(next.currentPlayerIndex).toBe(0);
     expect(next.actionCredits).toBe(1);
     expect(next.message).toBe("invalid move");
@@ -275,9 +344,11 @@ describe("Disuko rules engine", () => {
     const blueDice = game.dice.filter((die) => die.ownerId === "p1");
 
     blueDice.slice(0, 5).forEach((die, index) => {
+      die.value = (index + 1) as typeof die.value;
       die.row = 0;
       die.col = index;
     });
+    blueDice[5].value = 6;
     blueDice[5].row = 1;
     blueDice[5].col = 0;
     game.completedKeys = ["row:0"];
@@ -533,8 +604,17 @@ describe("Disuko rules engine", () => {
     blueDice[1].row = 3;
     blueDice[1].col = 3;
 
-    const moved = moveDie(game, blueDice[1].id, 0, 1);
-    const challenged = challengeViolation(moved);
+    blueDice[1].row = 0;
+    blueDice[1].col = 1;
+    game.lastAction = {
+      type: "move",
+      playerId: "p1",
+      dieId: blueDice[1].id,
+      completedKeys: [],
+      conflictDieIds: []
+    };
+
+    const challenged = challengeViolation(game);
     const returned = challenged.dice.find((die) => die.id === blueDice[1].id);
 
     expect(returned?.row).toBeNull();
@@ -552,8 +632,17 @@ describe("Disuko rules engine", () => {
     olderClickDice[1].row = 3;
     olderClickDice[1].col = 3;
 
-    const olderClickMoved = moveDie(clickOlderDieGame, olderClickDice[1].id, 0, 1);
-    const olderClickChallenged = challengeViolation(olderClickMoved, olderClickDice[0].id);
+    olderClickDice[1].row = 0;
+    olderClickDice[1].col = 1;
+    clickOlderDieGame.lastAction = {
+      type: "move",
+      playerId: "p1",
+      dieId: olderClickDice[1].id,
+      completedKeys: [],
+      conflictDieIds: []
+    };
+
+    const olderClickChallenged = challengeViolation(clickOlderDieGame, olderClickDice[0].id);
 
     expect(olderClickChallenged.dice.find((die) => die.id === olderClickDice[1].id)?.row).toBeNull();
 
@@ -566,8 +655,17 @@ describe("Disuko rules engine", () => {
     newerClickDice[1].row = 3;
     newerClickDice[1].col = 3;
 
-    const newerClickMoved = moveDie(clickNewerDieGame, newerClickDice[1].id, 0, 1);
-    const newerClickChallenged = challengeViolation(newerClickMoved, newerClickDice[1].id);
+    newerClickDice[1].row = 0;
+    newerClickDice[1].col = 1;
+    clickNewerDieGame.lastAction = {
+      type: "move",
+      playerId: "p1",
+      dieId: newerClickDice[1].id,
+      completedKeys: [],
+      conflictDieIds: []
+    };
+
+    const newerClickChallenged = challengeViolation(clickNewerDieGame, newerClickDice[1].id);
 
     expect(newerClickChallenged.dice.find((die) => die.id === newerClickDice[1].id)?.row).toBeNull();
   });

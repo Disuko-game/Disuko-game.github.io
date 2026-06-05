@@ -30,6 +30,7 @@ import {
   setSelectedRerollDice,
   setMode,
   wasDieMovedThisTurn,
+  wouldMoveDieConflict,
   wouldPlaceDieConflict
 } from "./game/engine";
 import { groupDiceByValue, type DiceValueGroup } from "./game/diceOrdering";
@@ -95,6 +96,7 @@ type SetupStartOptions = {
 
 type TabletopSlot = "top" | "right" | "bottom" | "left";
 type CompletionRewardPhase = "highlight" | "bonus";
+type InvalidReturnKind = "move" | "place";
 
 interface ViewportSize {
   width: number;
@@ -102,10 +104,24 @@ interface ViewportSize {
   rootFontSizePx: number;
 }
 
-interface InvalidPlacementPreview {
+interface ScreenPoint {
+  x: number;
+  y: number;
+}
+
+function centerOfElement(element: HTMLElement): ScreenPoint {
+  const rect = element.getBoundingClientRect();
+
+  return {
+    x: rect.left + rect.width / 2,
+    y: rect.top + rect.height / 2
+  };
+}
+
+interface InvalidMovePreview {
   id: number;
   die: Die;
-  playerId: string;
+  returnKind: InvalidReturnKind;
   startX: number;
   startY: number;
   returnX: number;
@@ -140,12 +156,6 @@ interface BoardCompletionReward {
   id: number;
   activeKey: string | null;
   bonusActions: number | null;
-  color: string;
-  playerSlot?: TabletopSlot;
-}
-
-interface BoardInvalidMoveMessage {
-  id: number;
   color: string;
   playerSlot?: TabletopSlot;
 }
@@ -373,7 +383,7 @@ function GameScreen({
   const [openRerollValue, setOpenRerollValue] = useState<DiceValue | null>(null);
   const [hasExplicitRerollSelection, setHasExplicitRerollSelection] = useState(false);
   const [dragPreview, setDragPreview] = useState<{ die: Die; x: number; y: number } | null>(null);
-  const [invalidPlacement, setInvalidPlacement] = useState<InvalidPlacementPreview | null>(null);
+  const [invalidMovePreview, setInvalidMovePreview] = useState<InvalidMovePreview | null>(null);
   const [completionReward, setCompletionReward] = useState<CompletionReward | null>(null);
   const [winnerCelebration, setWinnerCelebration] = useState<WinnerCelebrationLayout | null>(null);
   const [turnPromptOpen, setTurnPromptOpen] = useState(false);
@@ -383,8 +393,8 @@ function GameScreen({
     return !game.tabletopMode && game.players.length >= 3 && viewport.height <= COMPACT_TRAY_INITIAL_HEIGHT_PX;
   });
   const shellRef = useRef<HTMLElement | null>(null);
-  const invalidPlacementId = useRef(0);
-  const invalidPlacementTimer = useRef<number | null>(null);
+  const invalidMovePreviewId = useRef(0);
+  const invalidMovePreviewTimer = useRef<number | null>(null);
   const completionRewardId = useRef(0);
   const completionRewardActive = useRef(false);
   const completionRewardQueue = useRef<QueuedCompletionReward[]>([]);
@@ -399,6 +409,8 @@ function GameScreen({
     pointerId: number;
     startX: number;
     startY: number;
+    originX: number;
+    originY: number;
     isDragging: boolean;
   } | null>(null);
   const clearDragListenersRef = useRef<(() => void) | null>(null);
@@ -419,16 +431,6 @@ function GameScreen({
   const winner = game.winnerId ? game.players.find((player) => player.id === game.winnerId) : undefined;
   const conflictDice = useMemo(() => conflictDieIds(game), [game]);
   const conflictCells = useMemo(() => conflictCellKeys(game), [game]);
-  const invalidPlacementPlayer = invalidPlacement
-    ? game.players.find((player) => player.id === invalidPlacement.playerId)
-    : undefined;
-  const invalidMoveMessage: BoardInvalidMoveMessage | null = invalidPlacement
-    ? {
-        id: invalidPlacement.id,
-        color: invalidPlacementPlayer ? playerColorCssVars[invalidPlacementPlayer.color] : activePlayerColor,
-        playerSlot: game.tabletopMode ? tabletopSlotForPlayer(game, invalidPlacement.playerId) : undefined
-      }
-    : null;
   const rewardPlayer = completionReward
     ? game.players.find((player) => player.id === completionReward.playerId)
     : undefined;
@@ -462,7 +464,7 @@ function GameScreen({
     [game, activePlayer.id]
   );
   const selectedDieIdSet = useMemo(() => new Set(game.selectedDieIds), [game.selectedDieIds]);
-  const transientDieId = dragPreview?.die.id ?? invalidPlacement?.die.id ?? null;
+  const transientDieId = dragPreview?.die.id ?? invalidMovePreview?.die.id ?? null;
 
   useLayoutEffect(() => {
     if (game.tabletopMode || game.players.length < 3) {
@@ -546,13 +548,13 @@ function GameScreen({
     currentTrayGroups.length
   ]);
 
-  const clearInvalidPlacement = () => {
-    if (invalidPlacementTimer.current !== null) {
-      window.clearTimeout(invalidPlacementTimer.current);
-      invalidPlacementTimer.current = null;
+  const clearInvalidMovePreview = () => {
+    if (invalidMovePreviewTimer.current !== null) {
+      window.clearTimeout(invalidMovePreviewTimer.current);
+      invalidMovePreviewTimer.current = null;
     }
 
-    setInvalidPlacement(null);
+    setInvalidMovePreview(null);
   };
 
   const showCompletionReward = (reward: QueuedCompletionReward) => {
@@ -589,8 +591,8 @@ function GameScreen({
 
   useEffect(() => {
     return () => {
-      if (invalidPlacementTimer.current !== null) {
-        window.clearTimeout(invalidPlacementTimer.current);
+      if (invalidMovePreviewTimer.current !== null) {
+        window.clearTimeout(invalidMovePreviewTimer.current);
       }
 
       clearStackLongPress();
@@ -793,46 +795,88 @@ function GameScreen({
   const commitMode = (mode: ActionMode) => onCommit(setMode(game, mode));
 
   const handleOpenMenu = () => {
-    clearInvalidPlacement();
+    clearInvalidMovePreview();
     onOpenMenu();
   };
 
   const handleNewGame = () => {
-    clearInvalidPlacement();
+    clearInvalidMovePreview();
     onNewGame();
   };
 
-  const showInvalidPlacement = (die: Die, row: number, col: number) => {
-    if (invalidPlacementTimer.current !== null) {
-      window.clearTimeout(invalidPlacementTimer.current);
+  const findRenderedDieCenter = (die: Die): ScreenPoint | null => {
+    if (die.row !== null && die.col !== null) {
+      const boardDie = document.querySelector<HTMLElement>(
+        `.board-cell[data-row="${die.row}"][data-col="${die.col}"] .die-face`
+      );
+
+      if (boardDie) {
+        return centerOfElement(boardDie);
+      }
     }
 
-    const cell = document.querySelector<HTMLElement>(`.board-cell[data-row="${row}"][data-col="${col}"]`);
-    const tray =
-      document.querySelector<HTMLElement>(`.dice-tray[data-player-id="${activePlayer.id}"]`) ??
-      document.querySelector<HTMLElement>(".dice-tray");
-    const cellRect = cell?.getBoundingClientRect();
-    const trayRect = tray?.getBoundingClientRect();
-    const startX = cellRect ? cellRect.left + cellRect.width / 2 : window.innerWidth / 2;
-    const startY = cellRect ? cellRect.top + cellRect.height / 2 : window.innerHeight / 2;
-    const endX = trayRect ? trayRect.left + trayRect.width / 2 : startX;
-    const endY = trayRect ? trayRect.top + trayRect.height / 2 : startY + window.innerHeight * 0.28;
-    const id = invalidPlacementId.current + 1;
+    const dieElement = Array.from(document.querySelectorAll<HTMLElement>("[data-die-id]")).find(
+      (element) =>
+        element.dataset.dieId === die.id && !element.closest(".drag-preview, .invalid-return-preview")
+    );
 
-    invalidPlacementId.current = id;
-    setInvalidPlacement({
+    return dieElement ? centerOfElement(dieElement) : null;
+  };
+
+  const findTrayCenter = (playerId: string): ScreenPoint | null => {
+    const tray =
+      document.querySelector<HTMLElement>(`.dice-tray[data-player-id="${playerId}"]`) ??
+      document.querySelector<HTMLElement>(".dice-tray");
+
+    return tray ? centerOfElement(tray) : null;
+  };
+
+  const showInvalidMoveReturn = (
+    die: Die,
+    from: ScreenPoint,
+    to?: ScreenPoint | null,
+    options: { playerId?: string; returnKind?: InvalidReturnKind } = {}
+  ) => {
+    if (invalidMovePreviewTimer.current !== null) {
+      window.clearTimeout(invalidMovePreviewTimer.current);
+    }
+
+    const playerId = options.playerId ?? die.ownerId;
+    const destination = to ?? findRenderedDieCenter(die) ?? findTrayCenter(playerId) ?? {
+      x: from.x,
+      y: from.y + window.innerHeight * 0.28
+    };
+    const id = invalidMovePreviewId.current + 1;
+    const returnKind = options.returnKind ?? (isOnBoard(die) ? "move" : "place");
+
+    invalidMovePreviewId.current = id;
+    setInvalidMovePreview({
       id,
       die,
-      playerId: activePlayer.id,
-      startX,
-      startY,
-      returnX: endX - startX,
-      returnY: endY - startY
+      returnKind,
+      startX: from.x,
+      startY: from.y,
+      returnX: destination.x - from.x,
+      returnY: destination.y - from.y
     });
-    invalidPlacementTimer.current = window.setTimeout(() => {
-      setInvalidPlacement((current) => (current?.id === id ? null : current));
-      invalidPlacementTimer.current = null;
+    invalidMovePreviewTimer.current = window.setTimeout(() => {
+      setInvalidMovePreview((current) => (current?.id === id ? null : current));
+      invalidMovePreviewTimer.current = null;
     }, INVALID_MOVE_ANIMATION_MS);
+  };
+
+  const showInvalidPlacement = (
+    die: Die,
+    row: number,
+    col: number,
+    returnPath?: { from: ScreenPoint; to: ScreenPoint }
+  ) => {
+    const cell = document.querySelector<HTMLElement>(`.board-cell[data-row="${row}"][data-col="${col}"]`);
+    const from =
+      returnPath?.from ?? (cell ? centerOfElement(cell) : { x: window.innerWidth / 2, y: window.innerHeight / 2 });
+    const to = returnPath?.to ?? findRenderedDieCenter(die) ?? findTrayCenter(activePlayer.id);
+
+    showInvalidMoveReturn(die, from, to, { playerId: activePlayer.id, returnKind: "place" });
   };
 
   const selectedCountForGroup = (group: DiceValueGroup) =>
@@ -962,20 +1006,42 @@ function GameScreen({
     onCommit(selectDie(setMode(game, "move"), die.id));
   };
 
-  const commitDieToCell = (die: Die, row: number, col: number) => {
+  const commitDieToCell = (
+    die: Die,
+    row: number,
+    col: number,
+    returnPath?: { from: ScreenPoint; to: ScreenPoint }
+  ) => {
     const cellDie = getDieAt(game, row, col);
 
     if (cellDie?.id === die.id) {
       return;
     }
 
+    if (cellDie) {
+      const cell = document.querySelector<HTMLElement>(`.board-cell[data-row="${row}"][data-col="${col}"]`);
+      const from = returnPath?.from ?? (cell ? centerOfElement(cell) : findRenderedDieCenter(die));
+
+      showInvalidMoveReturn(die, from ?? { x: window.innerWidth / 2, y: window.innerHeight / 2 }, returnPath?.to);
+      return;
+    }
+
     if (isOnBoard(die)) {
+      if (wouldMoveDieConflict(game, die.id, row, col)) {
+        const cell = document.querySelector<HTMLElement>(`.board-cell[data-row="${row}"][data-col="${col}"]`);
+        const from = returnPath?.from ?? (cell ? centerOfElement(cell) : findRenderedDieCenter(die));
+
+        showInvalidMoveReturn(die, from ?? { x: window.innerWidth / 2, y: window.innerHeight / 2 }, returnPath?.to, {
+          returnKind: "move"
+        });
+      }
+
       onCommit(moveDie(game, die.id, row, col));
       return;
     }
 
     if (wouldPlaceDieConflict(game, die.id, row, col)) {
-      showInvalidPlacement(die, row, col);
+      showInvalidPlacement(die, row, col, returnPath);
       onCommit(placeDie(game, die.id, row, col));
       return;
     }
@@ -1015,11 +1081,14 @@ function GameScreen({
     }
 
     clearDragListeners();
+    const origin = centerOfElement(event.currentTarget);
     dragCandidate.current = {
       dieId: die.id,
       pointerId: event.pointerId,
       startX: event.clientX,
       startY: event.clientY,
+      originX: origin.x,
+      originY: origin.y,
       isDragging: false
     };
 
@@ -1091,15 +1160,22 @@ function GameScreen({
     setDragPreview(null);
 
     const die = game.dice.find((candidateDie) => candidateDie.id === candidate.dieId);
+    const releasePoint = { x: event.clientX, y: event.clientY };
+    const originPoint = { x: candidate.originX, y: candidate.originY };
     const target = document.elementFromPoint(event.clientX, event.clientY)?.closest<HTMLElement>(".board-cell");
     const row = Number(target?.dataset.row);
     const col = Number(target?.dataset.col);
 
-    if (!die || !target || !Number.isInteger(row) || !Number.isInteger(col)) {
+    if (!die) {
       return;
     }
 
-    commitDieToCell(die, row, col);
+    if (!target || !Number.isInteger(row) || !Number.isInteger(col)) {
+      showInvalidMoveReturn(die, releasePoint, originPoint);
+      return;
+    }
+
+    commitDieToCell(die, row, col, { from: releasePoint, to: originPoint });
   };
 
   const handleDiePointerCancel = (event: DragPointerEvent) => {
@@ -1146,7 +1222,6 @@ function GameScreen({
       recentMoveHighlights={recentMoveHighlights}
       draggingDieId={transientDieId}
       completionReward={completionRewardOverlay}
-      invalidMoveMessage={invalidMoveMessage}
       tabletopMode={game.tabletopMode}
       activePlayerColor={activePlayerColor}
       onCell={handleCell}
@@ -1244,21 +1319,23 @@ function GameScreen({
         </div>
       ) : null}
 
-      {invalidPlacement ? (
+      {invalidMovePreview ? (
         <>
           <div
-            className="invalid-return-preview"
+            className={`invalid-return-preview ${
+              invalidMovePreview.returnKind === "move" ? "is-board-move" : "is-placement"
+            }`}
             style={
               {
-                left: invalidPlacement.startX,
-                top: invalidPlacement.startY,
-                "--invalid-return-x": `${invalidPlacement.returnX}px`,
-                "--invalid-return-y": `${invalidPlacement.returnY}px`
+                left: invalidMovePreview.startX,
+                top: invalidMovePreview.startY,
+                "--invalid-return-x": `${invalidMovePreview.returnX}px`,
+                "--invalid-return-y": `${invalidMovePreview.returnY}px`
               } as CSSProperties
             }
             aria-hidden="true"
           >
-            <DieFace die={invalidPlacement.die} compact />
+            <DieFace die={invalidMovePreview.die} compact />
           </div>
         </>
       ) : null}
@@ -1493,13 +1570,14 @@ function completionSegmentsForKey(key: string, game: GameState): CompletionSegme
   return [];
 }
 
-function completionSegmentStyle(segment: CompletionSegment, color: string): CSSProperties {
+function completionSegmentStyle(segment: CompletionSegment, color: string, index: number): CSSProperties {
   return {
     "--completion-color": color,
     "--completion-row": segment.row,
     "--completion-col": segment.col,
     "--completion-row-span": segment.rowSpan,
-    "--completion-col-span": segment.colSpan
+    "--completion-col-span": segment.colSpan,
+    "--completion-trace-delay": `${index * 42}ms`
   } as CSSProperties;
 }
 
@@ -1568,7 +1646,6 @@ function Board({
   recentMoveHighlights,
   draggingDieId,
   completionReward,
-  invalidMoveMessage,
   tabletopMode = false,
   activePlayerColor,
   onCell,
@@ -1584,7 +1661,6 @@ function Board({
   recentMoveHighlights: Map<string, PlayerColor>;
   draggingDieId: string | null;
   completionReward: BoardCompletionReward | null;
-  invalidMoveMessage: BoardInvalidMoveMessage | null;
   tabletopMode?: boolean;
   activePlayerColor?: string;
   onCell: (row: number, col: number) => void;
@@ -1657,7 +1733,11 @@ function Board({
           <div
             className={`completion-highlight-segment ${segment.outline === "die" ? "is-dice-outline" : ""}`}
             key={`${completionReward?.id}-${completionReward?.activeKey}-${index}`}
-            style={completionSegmentStyle(segment, completionReward?.color ?? activePlayerColor ?? "var(--cream)")}
+            style={completionSegmentStyle(
+              segment,
+              completionReward?.color ?? activePlayerColor ?? "var(--cream)",
+              index
+            )}
             aria-hidden="true"
           />
         ))}
@@ -1672,19 +1752,6 @@ function Board({
             aria-live="polite"
           >
             {bonusLabel}
-          </div>
-        ) : null}
-        {invalidMoveMessage ? (
-          <div
-            className={`invalid-move-toast ${
-              invalidMoveMessage.playerSlot ? `faces-${invalidMoveMessage.playerSlot}` : ""
-            }`}
-            key={`invalid-${invalidMoveMessage.id}`}
-            style={{ "--invalid-color": invalidMoveMessage.color } as CSSProperties}
-            role="status"
-            aria-live="assertive"
-          >
-            invalid move
           </div>
         ) : null}
       </div>
@@ -1777,6 +1844,11 @@ function DiceTray({
           />
         </div>
         <div className="tray-action-column">
+          {mode === "reroll" && !disabled ? (
+            <button className="reroll-cancel-button" type="button" onClick={onCancelReroll}>
+              Cancel
+            </button>
+          ) : null}
           <ActionButton
             color={rollColor}
             icon={<MiniDieIcon />}
@@ -1786,11 +1858,6 @@ function DiceTray({
             className="tray-roll-button"
             onClick={onRoll}
           />
-          {mode === "reroll" && !disabled ? (
-            <button className="reroll-cancel-button" type="button" onClick={onCancelReroll}>
-              Cancel
-            </button>
-          ) : null}
         </div>
       </div>
     </section>
@@ -1891,7 +1958,15 @@ function DiceRail({
   }, [openRerollValue, rerollMode, openSelectedCount, visibleGroups.length]);
 
   return (
-    <div className={`dice-rail-groove ${readOnly ? "is-readonly" : ""} ${className ?? ""}`}>
+    <div
+      className={`dice-rail-groove ${readOnly ? "is-readonly" : ""} ${className ?? ""}`}
+      style={
+        {
+          "--rail-group-count": Math.max(visibleGroups.length, 1),
+          "--rail-gap-count": Math.max(visibleGroups.length - 1, 0)
+        } as CSSProperties
+      }
+    >
       {visibleGroups.length === 0 ? (
         <p className="empty-tray">{emptyLabel}</p>
       ) : (
@@ -2116,6 +2191,7 @@ function DieFace({
       } ${recentMoveColor ? `is-recent-move recent-${recentMoveColor}` : ""} ${
         draggingSource ? "is-dragging-source" : ""
       } ${compact ? "is-compact" : ""}`}
+      data-die-id={die.id}
       onClick={(event) => {
         if (!onClick) {
           return;

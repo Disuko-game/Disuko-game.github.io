@@ -476,22 +476,27 @@ p {
 }
 
 .completion-highlight-segment {
+  --completion-trace-width: 0.22rem;
+  --completion-outline-color: color-mix(in srgb, var(--completion-color), white 34%);
   position: absolute;
   z-index: 4;
   top: calc(var(--completion-row) * 100% / 6);
   left: calc(var(--completion-col) * 100% / 6);
   width: calc(var(--completion-col-span) * 100% / 6);
   height: calc(var(--completion-row-span) * 100% / 6);
-  border: 0.22rem solid color-mix(in srgb, var(--completion-color), white 34%);
   border-radius: 0.52rem;
-  background: transparent;
+  background:
+    linear-gradient(var(--completion-outline-color), var(--completion-outline-color)) left top / 0 var(--completion-trace-width) no-repeat,
+    linear-gradient(var(--completion-outline-color), var(--completion-outline-color)) right top / var(--completion-trace-width) 0 no-repeat,
+    linear-gradient(var(--completion-outline-color), var(--completion-outline-color)) right bottom / 0 var(--completion-trace-width) no-repeat,
+    linear-gradient(var(--completion-outline-color), var(--completion-outline-color)) left bottom / var(--completion-trace-width) 0 no-repeat;
   box-shadow:
-    inset 0 0 0 0.12rem color-mix(in srgb, var(--completion-color), white 16%),
     inset 0 0 0.64rem color-mix(in srgb, var(--completion-color), transparent 42%),
     0 0 0.45rem color-mix(in srgb, var(--completion-color), white 28%),
     0 0 1.35rem color-mix(in srgb, var(--completion-color), transparent 22%);
   pointer-events: none;
-  animation: completionSetGlow 780ms ease-out both;
+  animation: completionTraceClockwise 780ms ease-out both;
+  animation-delay: var(--completion-trace-delay, 0ms);
 }
 
 .completion-highlight-segment.is-dice-outline {
@@ -569,7 +574,8 @@ p {
 }
 
 .die-face.is-compact {
-  width: var(--compact-die-size, 2.8rem);
+  width: min(100%, var(--compact-die-size, 2.55rem));
+  max-width: 100%;
 }
 
 .die-face.is-selected {
@@ -742,24 +748,24 @@ p {
 
 .reroll-cancel-button {
   justify-self: stretch;
-  min-height: 1.92rem;
+  min-height: 1.5rem;
   border: 0.08rem solid rgba(255, 226, 163, 0.28);
-  border-radius: 0.56rem;
+  border-radius: 0.46rem;
   background: linear-gradient(180deg, #8b4b26, #4f210d);
   color: #fff0bf;
-  font-size: 0.76rem;
+  font-size: 0.62rem;
   font-weight: 950;
   line-height: 1;
-  padding: 0 0.42rem;
+  padding: 0 0.26rem;
   text-shadow: 0 0.09rem 0 rgba(0, 0, 0, 0.38);
   box-shadow: inset 0 0.11rem 0 rgba(255, 255, 255, 0.18), 0 0.24rem 0.42rem rgba(0, 0, 0, 0.28);
 }
 
 .tray-control-row {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(4.28rem, max-content);
+  grid-template-columns: minmax(0, 1fr) minmax(3.35rem, max-content);
   align-items: end;
-  gap: 0.52rem;
+  gap: 0.38rem;
   min-width: 0;
 }
 
@@ -775,14 +781,23 @@ p {
 
 .tray-action-column {
   align-self: end;
-  gap: 0.28rem;
-  min-width: 4.28rem;
+  gap: 0.18rem;
+  min-width: 3.35rem;
 }
 
 .dice-rail-groove {
-  display: flex;
+  --rail-gap: clamp(0.08rem, 1vw, 0.26rem);
+  --rail-slot-max: var(--compact-die-size, 2.55rem);
+  --rail-slot-size: min(
+    var(--rail-slot-max),
+    calc((100% - var(--rail-gap-count, 0) * var(--rail-gap)) / var(--rail-group-count, 1))
+  );
+  display: grid;
+  grid-template-columns: repeat(var(--rail-group-count, 1), minmax(0, var(--rail-slot-size)));
   align-items: center;
-  gap: 0.5rem;
+  justify-content: start;
+  justify-items: stretch;
+  gap: var(--rail-gap);
   min-height: 3.55rem;
   border: 0.08rem solid rgba(255, 226, 163, 0.18);
   border-radius: 0.8rem;
@@ -792,9 +807,8 @@ p {
   box-shadow:
     inset 0 0.2rem 0.38rem rgba(0, 0, 0, 0.38),
     inset 0 -0.08rem 0 rgba(255, 223, 154, 0.1);
-  overflow-x: auto;
+  overflow: hidden;
   padding: 0.38rem 0.42rem 0.48rem;
-  scrollbar-width: thin;
 }
 
 .dice-rail-groove.is-readonly {
@@ -805,9 +819,10 @@ p {
 }
 
 .opponent-dice-rail {
+  --rail-gap: var(--opponent-rail-gap, clamp(0.08rem, 0.8vw, 0.16rem));
+  --rail-slot-max: var(--opponent-die-max, 2.65rem);
   --opponent-die-gap: var(--opponent-rail-gap, clamp(0.1rem, 0.9vw, 0.22rem));
   --opponent-die-size: clamp(1.7rem, calc(16.666% - var(--opponent-die-gap)), var(--opponent-die-max, 2.65rem));
-  gap: var(--opponent-die-gap);
   min-height: var(--opponent-rail-min-height, clamp(2.55rem, 10vw, 3.2rem));
   overflow: hidden;
   padding: 0.18rem clamp(0.18rem, 1.2vw, 0.36rem);
@@ -815,15 +830,14 @@ p {
 
 .opponent-dice-rail .rail-die {
   display: grid;
-  flex: 0 1 var(--opponent-die-size);
   place-items: center;
-  width: var(--opponent-die-size);
+  width: 100%;
   min-width: 0;
   padding: 0;
 }
 
 .opponent-dice-rail .die-face.is-compact {
-  width: 100%;
+  width: min(100%, var(--opponent-die-max, 2.65rem));
   max-width: var(--opponent-die-max, 2.65rem);
 }
 
@@ -837,7 +851,10 @@ p {
 }
 
 .rail-die {
-  flex: 0 0 auto;
+  display: grid;
+  place-items: center;
+  width: 100%;
+  min-width: 0;
   border: 0;
   border-radius: 0.85rem;
   background: transparent;
@@ -848,7 +865,8 @@ p {
 
 .rail-stack {
   display: grid;
-  flex: 0 0 auto;
+  width: 100%;
+  min-width: 0;
   justify-items: center;
   align-items: end;
   gap: 0.24rem;
@@ -960,19 +978,19 @@ p {
 
 .tray-roll-button {
   align-self: center;
-  min-width: 4.28rem;
-  width: 4.28rem;
-  min-height: 3.18rem;
-  border-radius: 0.72rem;
-  gap: 0.12rem;
-  padding: 0.28rem 0.34rem 0.3rem;
+  min-width: 3.35rem;
+  width: 3.35rem;
+  min-height: 2.42rem;
+  border-radius: 0.58rem;
+  gap: 0.08rem;
+  padding: 0.18rem 0.22rem 0.2rem;
 }
 
 .tray-roll-button .action-icon {
   display: grid;
   place-items: center;
-  width: 1.42rem;
-  height: 1.42rem;
+  width: 1.08rem;
+  height: 1.08rem;
 }
 
 .tray-roll-button .action-label {
@@ -982,7 +1000,7 @@ p {
   overflow: visible;
   clip: auto;
   color: inherit;
-  font-size: 0.62rem;
+  font-size: 0.5rem;
   line-height: 1;
   text-align: center;
   text-transform: uppercase;
@@ -991,28 +1009,28 @@ p {
 
 .tray-roll-button .mini-die {
   display: grid;
-  grid-template-columns: repeat(2, 0.32rem);
-  grid-template-rows: repeat(2, 0.32rem);
+  grid-template-columns: repeat(2, 0.24rem);
+  grid-template-rows: repeat(2, 0.24rem);
   place-content: center;
   place-items: center;
-  gap: 0.16rem;
-  width: 1.34rem;
-  height: 1.34rem;
-  border-radius: 0.3rem;
+  gap: 0.12rem;
+  width: 1rem;
+  height: 1rem;
+  border-radius: 0.24rem;
   background: #fff5d3;
-  padding: 0.2rem;
+  padding: 0.16rem;
   box-shadow: inset 0 -0.1rem 0 rgba(0, 0, 0, 0.2);
 }
 
 .mini-die span {
-  width: 0.28rem;
+  width: 0.21rem;
   aspect-ratio: 1;
   border-radius: 999px;
   background: #0c5ca6;
 }
 
 .game-shell.has-compact-trays {
-  --compact-die-size: 2.28rem;
+  --compact-die-size: 2.05rem;
   --opponent-die-max: 2.08rem;
   --opponent-rail-gap: clamp(0.08rem, 0.7vw, 0.15rem);
   --opponent-rail-min-height: 2.32rem;
@@ -1070,8 +1088,8 @@ p {
 }
 
 .game-shell.has-compact-trays .tray-control-row {
-  grid-template-columns: minmax(0, 1fr) minmax(3.72rem, max-content);
-  gap: 0.32rem;
+  grid-template-columns: minmax(0, 1fr) minmax(3.05rem, max-content);
+  gap: 0.28rem;
 }
 
 .game-shell.has-compact-trays .tray-dice-column {
@@ -1079,8 +1097,8 @@ p {
 }
 
 .game-shell.has-compact-trays .tray-action-column {
-  gap: 0.2rem;
-  min-width: 3.72rem;
+  gap: 0.16rem;
+  min-width: 3.05rem;
 }
 
 .game-shell.has-compact-trays .dice-rail-groove:not(.opponent-dice-rail) {
@@ -1095,41 +1113,41 @@ p {
 }
 
 .game-shell.has-compact-trays .tray-roll-button {
-  min-width: 3.72rem;
-  width: 3.72rem;
-  min-height: 2.72rem;
-  border-radius: 0.62rem;
-  padding: 0.2rem 0.24rem 0.22rem;
+  min-width: 3.05rem;
+  width: 3.05rem;
+  min-height: 2.18rem;
+  border-radius: 0.52rem;
+  padding: 0.14rem 0.18rem 0.16rem;
 }
 
 .game-shell.has-compact-trays .tray-roll-button .action-icon {
-  width: 1.18rem;
-  height: 1.18rem;
+  width: 0.96rem;
+  height: 0.96rem;
 }
 
 .game-shell.has-compact-trays .tray-roll-button .action-label {
-  font-size: 0.56rem;
+  font-size: 0.46rem;
 }
 
 .game-shell.has-compact-trays .tray-roll-button .mini-die {
-  grid-template-columns: repeat(2, 0.27rem);
-  grid-template-rows: repeat(2, 0.27rem);
-  gap: 0.13rem;
-  width: 1.12rem;
-  height: 1.12rem;
-  border-radius: 0.25rem;
-  padding: 0.17rem;
+  grid-template-columns: repeat(2, 0.22rem);
+  grid-template-rows: repeat(2, 0.22rem);
+  gap: 0.11rem;
+  width: 0.92rem;
+  height: 0.92rem;
+  border-radius: 0.22rem;
+  padding: 0.14rem;
 }
 
 .game-shell.has-compact-trays .tray-roll-button .mini-die span {
-  width: 0.23rem;
+  width: 0.19rem;
 }
 
 .game-shell.has-compact-trays .reroll-cancel-button {
-  min-height: 1.58rem;
-  border-radius: 0.48rem;
-  font-size: 0.66rem;
-  padding: 0 0.28rem;
+  min-height: 1.32rem;
+  border-radius: 0.42rem;
+  font-size: 0.54rem;
+  padding: 0 0.22rem;
 }
 
 .menu-backdrop {
@@ -1150,47 +1168,12 @@ p {
   filter: drop-shadow(0 0.75rem 0.75rem rgba(0, 0, 0, 0.38));
 }
 
-.invalid-move-toast {
-  --invalid-color: #f34c34;
-  --invalid-facing-rotate: 0deg;
-  position: absolute;
-  top: 50%;
-  left: 50%;
-  z-index: 6;
-  min-width: min(76%, 10.5rem);
-  border: 0.14rem solid color-mix(in srgb, var(--invalid-color), white 44%);
-  border-radius: 0.82rem;
-  background:
-    radial-gradient(circle at 50% 0%, rgba(255, 255, 255, 0.24), transparent 56%),
-    linear-gradient(180deg, #f34c34, #98140d);
-  color: #fff8d8;
-  font-size: clamp(1.05rem, 5vw, 1.58rem);
-  font-weight: 950;
-  letter-spacing: 0;
-  line-height: 1;
-  padding: 0.56rem 0.84rem 0.62rem;
-  text-align: center;
-  text-shadow: 0 0.09rem 0 rgba(0, 0, 0, 0.36);
-  box-shadow:
-    inset 0 0.12rem 0 rgba(255, 255, 255, 0.22),
-    inset 0 -0.14rem 0 rgba(0, 0, 0, 0.14),
-    0 0.5rem 0.8rem rgba(0, 0, 0, 0.34),
-    0 0 1.1rem color-mix(in srgb, var(--invalid-color), transparent 26%);
-  transform: translate(-50%, -50%) rotate(var(--invalid-facing-rotate));
-  animation: invalidToast 2160ms ease-out both;
-  pointer-events: none;
+.drag-preview .die-face.is-compact {
+  width: 2.8rem;
 }
 
-.invalid-move-toast.faces-top {
-  --invalid-facing-rotate: 180deg;
-}
-
-.invalid-move-toast.faces-left {
-  --invalid-facing-rotate: 90deg;
-}
-
-.invalid-move-toast.faces-right {
-  --invalid-facing-rotate: -90deg;
+.game-shell.has-compact-trays .drag-preview .die-face.is-compact {
+  width: 2.45rem;
 }
 
 .invalid-return-preview {
@@ -1201,11 +1184,20 @@ p {
   animation: invalidReturn 2160ms cubic-bezier(0.24, 0.8, 0.26, 1) both;
 }
 
+.invalid-return-preview.is-board-move {
+  animation-name: invalidMoveReturn;
+}
+
 .invalid-return-preview .die-face {
+  width: 2.8rem;
   outline: 0.2rem solid #ff3b30;
   filter:
     drop-shadow(0 0 0.42rem rgba(255, 45, 31, 0.95))
     drop-shadow(0 0.58rem 0.6rem rgba(0, 0, 0, 0.36));
+}
+
+.game-shell.has-compact-trays .invalid-return-preview .die-face {
+  width: 2.45rem;
 }
 
 .winner-celebration {
@@ -1567,7 +1559,7 @@ p {
 }
 
 .tabletop-tray-slot .tray-control-row {
-  grid-template-columns: minmax(0, 1fr) minmax(4.28rem, max-content);
+  grid-template-columns: minmax(0, 1fr) minmax(3.35rem, max-content);
   gap: clamp(0.32rem, 0.9vw, 0.52rem);
 }
 
@@ -1609,25 +1601,53 @@ p {
   }
 }
 
-@keyframes completionSetGlow {
+@keyframes completionTraceClockwise {
   0% {
     opacity: 0;
-    transform: scale(0.88);
+    background-size:
+      0 var(--completion-trace-width),
+      var(--completion-trace-width) 0,
+      0 var(--completion-trace-width),
+      var(--completion-trace-width) 0;
+    transform: scale(0.98);
   }
 
-  18% {
+  12% {
     opacity: 1;
-    transform: scale(1.02);
   }
 
-  58% {
-    opacity: 0.92;
-    transform: scale(1);
+  30% {
+    background-size:
+      100% var(--completion-trace-width),
+      var(--completion-trace-width) 0,
+      0 var(--completion-trace-width),
+      var(--completion-trace-width) 0;
+  }
+
+  55% {
+    background-size:
+      100% var(--completion-trace-width),
+      var(--completion-trace-width) 100%,
+      0 var(--completion-trace-width),
+      var(--completion-trace-width) 0;
+  }
+
+  80% {
+    background-size:
+      100% var(--completion-trace-width),
+      var(--completion-trace-width) 100%,
+      100% var(--completion-trace-width),
+      var(--completion-trace-width) 0;
   }
 
   100% {
-    opacity: 0;
-    transform: scale(1.08);
+    opacity: 1;
+    background-size:
+      100% var(--completion-trace-width),
+      var(--completion-trace-width) 100%,
+      100% var(--completion-trace-width),
+      var(--completion-trace-width) 100%;
+    transform: scale(1);
   }
 }
 
@@ -1687,21 +1707,40 @@ p {
   }
 }
 
-@keyframes invalidToast {
+@keyframes invalidMoveReturn {
   0% {
-    opacity: 0;
-    transform: translate(-50%, -50%) translateY(0.35rem) rotate(var(--invalid-facing-rotate)) scale(0.96);
+    opacity: 1;
+    transform: translate(-50%, -50%) scale(1.08);
   }
 
-  16%,
-  72% {
+  8% {
     opacity: 1;
-    transform: translate(-50%, -50%) rotate(var(--invalid-facing-rotate)) scale(1);
+    transform: translate(calc(-50% - 0.42rem), -50%) scale(1.08) rotate(-4deg);
+  }
+
+  16% {
+    opacity: 1;
+    transform: translate(calc(-50% + 0.42rem), -50%) scale(1.08) rotate(4deg);
+  }
+
+  24% {
+    opacity: 1;
+    transform: translate(calc(-50% - 0.3rem), -50%) scale(1.08) rotate(-3deg);
+  }
+
+  34% {
+    opacity: 1;
+    transform: translate(calc(-50% + 0.2rem), -50%) scale(1.08) rotate(2deg);
+  }
+
+  44% {
+    opacity: 1;
+    transform: translate(-50%, -50%) scale(1.08);
   }
 
   100% {
-    opacity: 0;
-    transform: translate(-50%, -50%) translateY(0.2rem) rotate(var(--invalid-facing-rotate)) scale(0.98);
+    opacity: 1;
+    transform: translate(calc(-50% + var(--invalid-return-x)), calc(-50% + var(--invalid-return-y))) scale(1) rotate(0deg);
   }
 }
 
@@ -1791,12 +1830,12 @@ p {
   }
 
   .tray-control-row {
-    grid-template-columns: minmax(0, 1fr) minmax(4rem, max-content);
-    gap: 0.36rem;
+    grid-template-columns: minmax(0, 1fr) minmax(3.2rem, max-content);
+    gap: 0.3rem;
   }
 
   .tray-action-column {
-    min-width: 4rem;
+    min-width: 3.2rem;
   }
 
   .action-button {
@@ -1805,9 +1844,9 @@ p {
   }
 
   .tray-roll-button {
-    min-width: 4rem;
-    width: 4rem;
-    min-height: 3rem;
+    min-width: 3.2rem;
+    width: 3.2rem;
+    min-height: 2.32rem;
   }
 }
 
