@@ -42,6 +42,8 @@ const REROLL_STACK_LONG_PRESS_MS = 450;
 const INVALID_MOVE_ANIMATION_MS = 2160;
 const COMPLETION_HIGHLIGHT_MS = 780;
 const COMPLETION_BONUS_MS = 980;
+const COMPACT_TRAY_INITIAL_HEIGHT_PX = 720;
+const COMPACT_TRAY_RELEASE_MARGIN_PX = 96;
 const CONFETTI_COLORS = ["#fff1bf", "#f4b515", "#08a832", "#0878d6", "#e43322"] as const;
 const logoUrl = `${import.meta.env.BASE_URL}logo.png`;
 const boardIndexes = Array.from({ length: 36 }, (_, index) => ({
@@ -166,6 +168,7 @@ interface CompletionSegment {
   col: number;
   rowSpan: number;
   colSpan: number;
+  outline: "area" | "die";
 }
 
 export default function App(): ReactElement {
@@ -374,6 +377,12 @@ function GameScreen({
   const [completionReward, setCompletionReward] = useState<CompletionReward | null>(null);
   const [winnerCelebration, setWinnerCelebration] = useState<WinnerCelebrationLayout | null>(null);
   const [turnPromptOpen, setTurnPromptOpen] = useState(false);
+  const [compactTrayLayout, setCompactTrayLayout] = useState(() => {
+    const viewport = getViewportSize();
+
+    return !game.tabletopMode && game.players.length >= 3 && viewport.height <= COMPACT_TRAY_INITIAL_HEIGHT_PX;
+  });
+  const shellRef = useRef<HTMLElement | null>(null);
   const invalidPlacementId = useRef(0);
   const invalidPlacementTimer = useRef<number | null>(null);
   const completionRewardId = useRef(0);
@@ -454,6 +463,88 @@ function GameScreen({
   );
   const selectedDieIdSet = useMemo(() => new Set(game.selectedDieIds), [game.selectedDieIds]);
   const transientDieId = dragPreview?.die.id ?? invalidPlacement?.die.id ?? null;
+
+  useLayoutEffect(() => {
+    if (game.tabletopMode || game.players.length < 3) {
+      setCompactTrayLayout(false);
+      return;
+    }
+
+    const shell = shellRef.current;
+
+    if (!shell) {
+      return;
+    }
+
+    let animationFrame = 0;
+
+    const measureLayout = () => {
+      const opponentTray = shell.querySelector<HTMLElement>(".opponent-tray-zone");
+      const board = shell.querySelector<HTMLElement>(".board-wrap");
+      const activeTray = shell.querySelector<HTMLElement>(".side-stack");
+
+      if (!opponentTray || !board || !activeTray) {
+        return;
+      }
+
+      const visualViewportHeight = window.visualViewport?.height ?? window.innerHeight;
+      const viewportHeight = Math.min(window.innerHeight, visualViewportHeight);
+      const shellRect = shell.getBoundingClientRect();
+      const opponentRect = opponentTray.getBoundingClientRect();
+      const boardRect = board.getBoundingClientRect();
+      const activeTrayRect = activeTray.getBoundingClientRect();
+      const shellHeight = Math.min(shellRect.height, viewportHeight - Math.max(0, shellRect.top));
+      const contentBottom = Math.max(boardRect.bottom, activeTrayRect.bottom, opponentRect.bottom) - shellRect.top;
+      const topCollision = boardRect.top < opponentRect.bottom + 4;
+      const bottomCollision = activeTrayRect.top < boardRect.bottom + 4;
+      const overflow = contentBottom > shellHeight + 2;
+
+      setCompactTrayLayout((current) => {
+        const releaseStillTight = current && contentBottom > shellHeight - COMPACT_TRAY_RELEASE_MARGIN_PX;
+        const shouldCompact = topCollision || bottomCollision || overflow || releaseStillTight;
+
+        return current === shouldCompact ? current : shouldCompact;
+      });
+    };
+
+    const queueMeasure = () => {
+      if (animationFrame) {
+        window.cancelAnimationFrame(animationFrame);
+      }
+
+      animationFrame = window.requestAnimationFrame(() => {
+        animationFrame = 0;
+        measureLayout();
+      });
+    };
+
+    queueMeasure();
+
+    const resizeObserver = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(queueMeasure);
+    resizeObserver?.observe(shell);
+    window.addEventListener("resize", queueMeasure);
+    window.addEventListener("orientationchange", queueMeasure);
+    window.visualViewport?.addEventListener("resize", queueMeasure);
+
+    return () => {
+      if (animationFrame) {
+        window.cancelAnimationFrame(animationFrame);
+      }
+
+      resizeObserver?.disconnect();
+      window.removeEventListener("resize", queueMeasure);
+      window.removeEventListener("orientationchange", queueMeasure);
+      window.visualViewport?.removeEventListener("resize", queueMeasure);
+    };
+  }, [
+    game.currentPlayerIndex,
+    game.mode,
+    game.players.length,
+    game.selectedDieIds.length,
+    game.tabletopMode,
+    openRerollValue,
+    currentTrayGroups.length
+  ]);
 
   const clearInvalidPlacement = () => {
     if (invalidPlacementTimer.current !== null) {
@@ -1072,6 +1163,7 @@ function GameScreen({
     const trayMode = isActive ? game.mode : "place";
     const trayGroups = isActive ? currentTrayGroups : groupDiceByValue(offBoardDice(game, player.id));
     const disabled = !isActive || game.phase === "won";
+    const rerollReady = isActive && game.mode === "reroll" && game.selectedDieIds.length > 0;
 
     return (
       <DiceTray
@@ -1082,8 +1174,9 @@ function GameScreen({
         draggingDieId={transientDieId}
         openRerollValue={isActive ? openRerollValue : null}
         actionCountLabel={isActive ? trayStatusLabel : "0 actions"}
-        rollLabel={isActive && game.mode === "reroll" ? `Reroll ${game.selectedDieIds.length}` : "Roll"}
-        rollActive={isActive && game.mode === "reroll"}
+        rollLabel={rerollReady ? "ready" : "re-roll"}
+        rollColor={rerollReady ? "green" : "blue"}
+        rollActive={rerollReady}
         disabled={disabled}
         hidePlayerName={game.tabletopMode}
         className={isActive ? "is-active-player" : undefined}
@@ -1105,7 +1198,10 @@ function GameScreen({
 
   return (
     <main
-      className={`game-shell ${game.tabletopMode ? "is-tabletop" : ""}`}
+      className={`game-shell ${game.tabletopMode ? "is-tabletop" : ""} ${
+        compactTrayLayout ? "has-compact-trays" : ""
+      }`}
+      ref={shellRef}
       style={game.tabletopMode ? ({ "--active-player-color": activePlayerColor } as CSSProperties) : undefined}
     >
       {game.tabletopMode ? (
@@ -1353,11 +1449,11 @@ function completionSegmentsForKey(key: string, game: GameState): CompletionSegme
   }
 
   if (kind === "row" && index >= 0 && index < BOARD_SIZE) {
-    return [{ row: index, col: 0, rowSpan: 1, colSpan: BOARD_SIZE }];
+    return [{ row: index, col: 0, rowSpan: 1, colSpan: BOARD_SIZE, outline: "area" }];
   }
 
   if (kind === "column" && index >= 0 && index < BOARD_SIZE) {
-    return [{ row: 0, col: index, rowSpan: BOARD_SIZE, colSpan: 1 }];
+    return [{ row: 0, col: index, rowSpan: BOARD_SIZE, colSpan: 1, outline: "area" }];
   }
 
   if (kind === "box") {
@@ -1373,7 +1469,8 @@ function completionSegmentsForKey(key: string, game: GameState): CompletionSegme
           row,
           col,
           rowSpan: Math.max(...rows) - row + 1,
-          colSpan: Math.max(...cols) - col + 1
+          colSpan: Math.max(...cols) - col + 1,
+          outline: "area"
         }
       ];
     } catch {
@@ -1388,7 +1485,8 @@ function completionSegmentsForKey(key: string, game: GameState): CompletionSegme
         row: die.row as number,
         col: die.col as number,
         rowSpan: 1,
-        colSpan: 1
+        colSpan: 1,
+        outline: "die"
       }));
   }
 
@@ -1513,6 +1611,7 @@ function Board({
         {boardIndexes.map(({ row, col }) => {
           const die = getDieAt(game, row, col);
           const recentMoveColor = die ? recentMoveHighlights.get(die.id) : undefined;
+          const moveLocked = Boolean(die && game.actionCredits > 1 && wasDieMovedThisTurn(game, die.id));
           const key = `${row}:${col}`;
           const cellClasses = [
             "board-cell",
@@ -1542,6 +1641,7 @@ function Board({
                   selected={game.selectedDieIds.includes(die.id)}
                   conflicted={conflictDice.has(die.id)}
                   recentMoveColor={recentMoveColor}
+                  moveLocked={moveLocked}
                   draggingSource={draggingDieId === die.id}
                   onClick={() => onDie(die)}
                   onPointerDown={(event) => onDiePointerDown(event, die)}
@@ -1555,7 +1655,7 @@ function Board({
         })}
         {completionSegments.map((segment, index) => (
           <div
-            className="completion-highlight-segment"
+            className={`completion-highlight-segment ${segment.outline === "die" ? "is-dice-outline" : ""}`}
             key={`${completionReward?.id}-${completionReward?.activeKey}-${index}`}
             style={completionSegmentStyle(segment, completionReward?.color ?? activePlayerColor ?? "var(--cream)")}
             aria-hidden="true"
@@ -1601,6 +1701,7 @@ function DiceTray({
   openRerollValue,
   actionCountLabel,
   rollLabel,
+  rollColor,
   rollActive,
   disabled = false,
   hidePlayerName = false,
@@ -1626,6 +1727,7 @@ function DiceTray({
   openRerollValue: DiceValue | null;
   actionCountLabel: string;
   rollLabel: string;
+  rollColor: "blue" | "green";
   rollActive: boolean;
   disabled?: boolean;
   hidePlayerName?: boolean;
@@ -1649,43 +1751,47 @@ function DiceTray({
       data-player-id={player.id}
       aria-label={hidePlayerName ? `${player.color} dice tray` : `${player.name}'s dice tray`}
     >
-      <div className="tray-status-row" aria-live="polite">
-        <span className="tray-action-counter">{actionCountLabel}</span>
-      </div>
-      {mode === "reroll" && !disabled ? (
-        <button className="reroll-cancel-button" type="button" onClick={onCancelReroll}>
-          Cancel
-        </button>
-      ) : null}
       <div className="tray-control-row">
-        <DiceRail
-          groups={groups}
-          selectedIds={selectedIds}
-          draggingDieId={draggingDieId}
-          emptyLabel="All dice are on the board."
-          rerollMode={mode === "reroll"}
-          openRerollValue={openRerollValue}
-          disabled={disabled}
-          onGroup={onGroup}
-          onSetRerollCount={onSetRerollCount}
-          onRerollStackPointerDown={onRerollStackPointerDown}
-          onRerollStackPointerMove={onRerollStackPointerMove}
-          onRerollStackPointerUp={onRerollStackPointerUp}
-          onRerollStackPointerCancel={onRerollStackPointerCancel}
-          onDiePointerDown={onDiePointerDown}
-          onDiePointerMove={onDiePointerMove}
-          onDiePointerUp={onDiePointerUp}
-          onDiePointerCancel={onDiePointerCancel}
-        />
-        <ActionButton
-          color="blue"
-          icon={<MiniDieIcon />}
-          label={rollLabel}
-          active={rollActive}
-          disabled={disabled}
-          className="tray-roll-button"
-          onClick={onRoll}
-        />
+        <div className="tray-dice-column">
+          <div className={`tray-status-row ${mode === "reroll" ? "is-reroll-message" : ""}`} aria-live="polite">
+            <span className="tray-action-counter">{actionCountLabel}</span>
+          </div>
+          <DiceRail
+            groups={groups}
+            selectedIds={selectedIds}
+            draggingDieId={draggingDieId}
+            emptyLabel="All dice are on the board."
+            rerollMode={mode === "reroll"}
+            openRerollValue={openRerollValue}
+            disabled={disabled}
+            onGroup={onGroup}
+            onSetRerollCount={onSetRerollCount}
+            onRerollStackPointerDown={onRerollStackPointerDown}
+            onRerollStackPointerMove={onRerollStackPointerMove}
+            onRerollStackPointerUp={onRerollStackPointerUp}
+            onRerollStackPointerCancel={onRerollStackPointerCancel}
+            onDiePointerDown={onDiePointerDown}
+            onDiePointerMove={onDiePointerMove}
+            onDiePointerUp={onDiePointerUp}
+            onDiePointerCancel={onDiePointerCancel}
+          />
+        </div>
+        <div className="tray-action-column">
+          <ActionButton
+            color={rollColor}
+            icon={<MiniDieIcon />}
+            label={rollLabel}
+            active={rollActive}
+            disabled={disabled}
+            className="tray-roll-button"
+            onClick={onRoll}
+          />
+          {mode === "reroll" && !disabled ? (
+            <button className="reroll-cancel-button" type="button" onClick={onCancelReroll}>
+              Cancel
+            </button>
+          ) : null}
+        </div>
       </div>
     </section>
   );
@@ -1978,6 +2084,7 @@ function DieFace({
   selected = false,
   conflicted = false,
   recentMoveColor,
+  moveLocked = false,
   draggingSource = false,
   compact = false,
   multiplier,
@@ -1991,6 +2098,7 @@ function DieFace({
   selected?: boolean;
   conflicted?: boolean;
   recentMoveColor?: PlayerColor;
+  moveLocked?: boolean;
   draggingSource?: boolean;
   compact?: boolean;
   multiplier?: number | string;
@@ -2034,6 +2142,7 @@ function DieFace({
         />
       ))}
       {multiplier ? <span className="die-multiplier">{multiplier}</span> : null}
+      {moveLocked ? <span className="die-lock-icon" aria-hidden="true" /> : null}
     </span>
   );
 }

@@ -369,7 +369,7 @@ p {
 
 .opponent-tray-zone {
   display: grid;
-  gap: 0.34rem;
+  gap: var(--opponent-tray-gap, 0.34rem);
 }
 
 .opponent-tray-row {
@@ -409,7 +409,10 @@ p {
 
 .board-wrap {
   align-self: center;
+  box-sizing: border-box;
+  display: grid;
   width: 100%;
+  aspect-ratio: 1;
   border-radius: 1.1rem;
   background:
     linear-gradient(90deg, rgba(100, 55, 19, 0.12) 0 1px, transparent 1px 1.5rem),
@@ -479,17 +482,24 @@ p {
   left: calc(var(--completion-col) * 100% / 6);
   width: calc(var(--completion-col-span) * 100% / 6);
   height: calc(var(--completion-row-span) * 100% / 6);
-  border: 0.18rem solid color-mix(in srgb, var(--completion-color), white 38%);
+  border: 0.22rem solid color-mix(in srgb, var(--completion-color), white 34%);
   border-radius: 0.52rem;
-  background:
-    radial-gradient(circle, color-mix(in srgb, var(--completion-color), white 36%) 0%, color-mix(in srgb, var(--completion-color), transparent 58%) 56%, transparent 74%);
+  background: transparent;
   box-shadow:
-    inset 0 0 0.5rem color-mix(in srgb, var(--completion-color), white 34%),
+    inset 0 0 0 0.12rem color-mix(in srgb, var(--completion-color), white 16%),
+    inset 0 0 0.64rem color-mix(in srgb, var(--completion-color), transparent 42%),
     0 0 0.45rem color-mix(in srgb, var(--completion-color), white 28%),
     0 0 1.35rem color-mix(in srgb, var(--completion-color), transparent 22%);
-  mix-blend-mode: screen;
   pointer-events: none;
   animation: completionSetGlow 780ms ease-out both;
+}
+
+.completion-highlight-segment.is-dice-outline {
+  top: calc((var(--completion-row) * 100% / 6) + (100% / 6 * 0.1));
+  left: calc((var(--completion-col) * 100% / 6) + (100% / 6 * 0.1));
+  width: calc(100% / 6 * 0.8);
+  height: calc(100% / 6 * 0.8);
+  border-radius: 24%;
 }
 
 .completion-bonus-pop {
@@ -559,7 +569,7 @@ p {
 }
 
 .die-face.is-compact {
-  width: 2.8rem;
+  width: var(--compact-die-size, 2.8rem);
 }
 
 .die-face.is-selected {
@@ -603,6 +613,42 @@ p {
 .die-face.is-dragging-source,
 .tray-die.is-dragging-source {
   visibility: hidden;
+}
+
+.die-lock-icon {
+  position: absolute;
+  inset: 22%;
+  display: block;
+  opacity: 0.46;
+  pointer-events: none;
+}
+
+.die-lock-icon::before {
+  position: absolute;
+  right: 25%;
+  bottom: 43%;
+  left: 25%;
+  height: 31%;
+  border: 0.13rem solid rgba(255, 255, 255, 0.74);
+  border-bottom: 0;
+  border-radius: 999px 999px 0 0;
+  box-shadow: 0 0 0.16rem rgba(20, 8, 3, 0.46);
+  content: "";
+}
+
+.die-lock-icon::after {
+  position: absolute;
+  right: 17%;
+  bottom: 16%;
+  left: 17%;
+  height: 42%;
+  border: 0.12rem solid rgba(255, 255, 255, 0.76);
+  border-radius: 0.22rem;
+  background: rgba(255, 255, 255, 0.14);
+  box-shadow:
+    inset 0 0.12rem 0 rgba(255, 255, 255, 0.18),
+    0 0 0.2rem rgba(20, 8, 3, 0.42);
+  content: "";
 }
 
 .die-multiplier {
@@ -666,47 +712,71 @@ p {
 
 .dice-tray {
   display: grid;
-  gap: 0.42rem;
+  gap: 0;
   min-width: 0;
 }
 
 .tray-status-row {
   display: grid;
   place-items: center;
-  min-height: 1.42rem;
+  min-height: 1.22rem;
   min-width: 0;
 }
 
+.tray-status-row.is-reroll-message {
+  justify-items: start;
+  padding-left: 0.12rem;
+}
+
 .tray-action-counter {
+  max-width: 100%;
+  overflow: hidden;
   color: #ffe59c;
-  font-size: clamp(1.08rem, 3.3vw, 1.38rem);
+  font-size: clamp(0.92rem, 3.1vw, 1.22rem);
   font-weight: 950;
   line-height: 1;
+  text-overflow: ellipsis;
   text-shadow: 0 0.1rem 0 rgba(0, 0, 0, 0.44);
   white-space: nowrap;
 }
 
 .reroll-cancel-button {
-  justify-self: center;
-  min-height: 2.1rem;
+  justify-self: stretch;
+  min-height: 1.92rem;
   border: 0.08rem solid rgba(255, 226, 163, 0.28);
-  border-radius: 0.62rem;
+  border-radius: 0.56rem;
   background: linear-gradient(180deg, #8b4b26, #4f210d);
   color: #fff0bf;
-  font-size: 0.82rem;
+  font-size: 0.76rem;
   font-weight: 950;
   line-height: 1;
-  padding: 0 1rem;
+  padding: 0 0.42rem;
   text-shadow: 0 0.09rem 0 rgba(0, 0, 0, 0.38);
   box-shadow: inset 0 0.11rem 0 rgba(255, 255, 255, 0.18), 0 0.24rem 0.42rem rgba(0, 0, 0, 0.28);
 }
 
 .tray-control-row {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(3.05rem, max-content);
-  align-items: center;
+  grid-template-columns: minmax(0, 1fr) minmax(4.28rem, max-content);
+  align-items: end;
   gap: 0.52rem;
   min-width: 0;
+}
+
+.tray-dice-column,
+.tray-action-column {
+  display: grid;
+  min-width: 0;
+}
+
+.tray-dice-column {
+  gap: 0.24rem;
+}
+
+.tray-action-column {
+  align-self: end;
+  gap: 0.28rem;
+  min-width: 4.28rem;
 }
 
 .dice-rail-groove {
@@ -735,10 +805,10 @@ p {
 }
 
 .opponent-dice-rail {
-  --opponent-die-gap: clamp(0.1rem, 0.9vw, 0.22rem);
-  --opponent-die-size: clamp(1.7rem, calc(16.666% - var(--opponent-die-gap)), 2.65rem);
+  --opponent-die-gap: var(--opponent-rail-gap, clamp(0.1rem, 0.9vw, 0.22rem));
+  --opponent-die-size: clamp(1.7rem, calc(16.666% - var(--opponent-die-gap)), var(--opponent-die-max, 2.65rem));
   gap: var(--opponent-die-gap);
-  min-height: clamp(2.55rem, 10vw, 3.2rem);
+  min-height: var(--opponent-rail-min-height, clamp(2.55rem, 10vw, 3.2rem));
   overflow: hidden;
   padding: 0.18rem clamp(0.18rem, 1.2vw, 0.36rem);
 }
@@ -754,7 +824,7 @@ p {
 
 .opponent-dice-rail .die-face.is-compact {
   width: 100%;
-  max-width: 2.65rem;
+  max-width: var(--opponent-die-max, 2.65rem);
 }
 
 .opponent-dice-rail .die-multiplier {
@@ -890,41 +960,176 @@ p {
 
 .tray-roll-button {
   align-self: center;
-  min-width: 3.05rem;
-  width: 3.05rem;
-  min-height: 3.05rem;
+  min-width: 4.28rem;
+  width: 4.28rem;
+  min-height: 3.18rem;
   border-radius: 0.72rem;
-  gap: 0.14rem;
-  padding: 0;
+  gap: 0.12rem;
+  padding: 0.28rem 0.34rem 0.3rem;
 }
 
 .tray-roll-button .action-icon {
   display: grid;
   place-items: center;
-  width: 1.75rem;
-  height: 1.75rem;
+  width: 1.42rem;
+  height: 1.42rem;
+}
+
+.tray-roll-button .action-label {
+  position: static;
+  width: auto;
+  height: auto;
+  overflow: visible;
+  clip: auto;
+  color: inherit;
+  font-size: 0.62rem;
+  line-height: 1;
+  text-align: center;
+  text-transform: uppercase;
+  white-space: nowrap;
 }
 
 .tray-roll-button .mini-die {
   display: grid;
-  grid-template-columns: repeat(2, 0.38rem);
-  grid-template-rows: repeat(2, 0.38rem);
+  grid-template-columns: repeat(2, 0.32rem);
+  grid-template-rows: repeat(2, 0.32rem);
   place-content: center;
   place-items: center;
-  gap: 0.18rem;
-  width: 1.58rem;
-  height: 1.58rem;
-  border-radius: 0.34rem;
+  gap: 0.16rem;
+  width: 1.34rem;
+  height: 1.34rem;
+  border-radius: 0.3rem;
   background: #fff5d3;
-  padding: 0.24rem;
+  padding: 0.2rem;
   box-shadow: inset 0 -0.1rem 0 rgba(0, 0, 0, 0.2);
 }
 
 .mini-die span {
-  width: 0.32rem;
+  width: 0.28rem;
   aspect-ratio: 1;
   border-radius: 999px;
   background: #0c5ca6;
+}
+
+.game-shell.has-compact-trays {
+  --compact-die-size: 2.28rem;
+  --opponent-die-max: 2.08rem;
+  --opponent-rail-gap: clamp(0.08rem, 0.7vw, 0.15rem);
+  --opponent-rail-min-height: 2.32rem;
+  --opponent-tray-gap: 0.18rem;
+  gap: 0.42rem;
+  padding-top: max(0.45rem, env(safe-area-inset-top));
+  padding-bottom: max(0.55rem, env(safe-area-inset-bottom));
+}
+
+.game-shell.has-compact-trays .opponent-tray-row {
+  grid-template-columns: minmax(3.2rem, max-content) minmax(0, 1fr);
+  gap: clamp(0.2rem, 1vw, 0.36rem);
+}
+
+.game-shell.has-compact-trays .opponent-tray-row strong {
+  font-size: clamp(0.78rem, 2.55vw, 0.94rem);
+}
+
+.game-shell.has-compact-trays .opponent-dice-rail {
+  border-radius: 0.62rem;
+  padding: 0.12rem clamp(0.12rem, 0.8vw, 0.22rem);
+}
+
+.game-shell.has-compact-trays .opponent-dice-rail .die-multiplier {
+  right: -0.18rem;
+  bottom: -0.16rem;
+  min-width: 1.06rem;
+  height: 1.06rem;
+  font-size: 0.82rem;
+}
+
+.game-shell.has-compact-trays .board-wrap {
+  align-self: stretch;
+  justify-self: center;
+  width: auto;
+  height: 100%;
+  max-width: 100%;
+  max-height: 100%;
+  border-radius: 0.92rem;
+  padding: 0.46rem;
+}
+
+.game-shell.has-compact-trays .board-grid {
+  width: 100%;
+  height: 100%;
+  aspect-ratio: auto;
+}
+
+.game-shell.has-compact-trays .tray-status-row {
+  min-height: 1.02rem;
+}
+
+.game-shell.has-compact-trays .tray-action-counter {
+  font-size: clamp(0.78rem, 2.6vw, 1rem);
+}
+
+.game-shell.has-compact-trays .tray-control-row {
+  grid-template-columns: minmax(0, 1fr) minmax(3.72rem, max-content);
+  gap: 0.32rem;
+}
+
+.game-shell.has-compact-trays .tray-dice-column {
+  gap: 0.18rem;
+}
+
+.game-shell.has-compact-trays .tray-action-column {
+  gap: 0.2rem;
+  min-width: 3.72rem;
+}
+
+.game-shell.has-compact-trays .dice-rail-groove:not(.opponent-dice-rail) {
+  min-height: 3rem;
+  border-radius: 0.68rem;
+  padding: 0.24rem 0.3rem 0.32rem;
+}
+
+.game-shell.has-compact-trays .rail-die {
+  border-radius: 0.68rem;
+  padding: 0.08rem;
+}
+
+.game-shell.has-compact-trays .tray-roll-button {
+  min-width: 3.72rem;
+  width: 3.72rem;
+  min-height: 2.72rem;
+  border-radius: 0.62rem;
+  padding: 0.2rem 0.24rem 0.22rem;
+}
+
+.game-shell.has-compact-trays .tray-roll-button .action-icon {
+  width: 1.18rem;
+  height: 1.18rem;
+}
+
+.game-shell.has-compact-trays .tray-roll-button .action-label {
+  font-size: 0.56rem;
+}
+
+.game-shell.has-compact-trays .tray-roll-button .mini-die {
+  grid-template-columns: repeat(2, 0.27rem);
+  grid-template-rows: repeat(2, 0.27rem);
+  gap: 0.13rem;
+  width: 1.12rem;
+  height: 1.12rem;
+  border-radius: 0.25rem;
+  padding: 0.17rem;
+}
+
+.game-shell.has-compact-trays .tray-roll-button .mini-die span {
+  width: 0.23rem;
+}
+
+.game-shell.has-compact-trays .reroll-cancel-button {
+  min-height: 1.58rem;
+  border-radius: 0.48rem;
+  font-size: 0.66rem;
+  padding: 0 0.28rem;
 }
 
 .menu-backdrop {
@@ -1362,7 +1567,7 @@ p {
 }
 
 .tabletop-tray-slot .tray-control-row {
-  grid-template-columns: minmax(0, 1fr) minmax(3.05rem, max-content);
+  grid-template-columns: minmax(0, 1fr) minmax(4.28rem, max-content);
   gap: clamp(0.32rem, 0.9vw, 0.52rem);
 }
 
@@ -1586,8 +1791,12 @@ p {
   }
 
   .tray-control-row {
-    grid-template-columns: minmax(0, 1fr) minmax(2.9rem, max-content);
+    grid-template-columns: minmax(0, 1fr) minmax(4rem, max-content);
     gap: 0.36rem;
+  }
+
+  .tray-action-column {
+    min-width: 4rem;
   }
 
   .action-button {
@@ -1596,9 +1805,9 @@ p {
   }
 
   .tray-roll-button {
-    min-width: 2.9rem;
-    width: 2.9rem;
-    min-height: 2.9rem;
+    min-width: 4rem;
+    width: 4rem;
+    min-height: 3rem;
   }
 }
 
