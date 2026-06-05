@@ -10,7 +10,7 @@ import {
   type ReactNode
 } from "react";
 import { createPortal } from "react-dom";
-import { cellsForBox } from "./game/geometry";
+import { boxIndex, cellsForBox } from "./game/geometry";
 import {
   challengeViolation,
   conflictCellKeys,
@@ -45,6 +45,9 @@ const COMPLETION_HIGHLIGHT_MS = 780;
 const COMPLETION_BONUS_MS = 980;
 const COMPACT_TRAY_INITIAL_HEIGHT_PX = 720;
 const COMPACT_TRAY_RELEASE_MARGIN_PX = 96;
+const COMPLETION_FEEDBACK_COLOR = "var(--blue)";
+const CONFLICT_BLOCKER_FEEDBACK_COLOR = COMPLETION_FEEDBACK_COLOR;
+const INVALID_MOVE_FEEDBACK_COLOR = "#f34c34";
 const CONFETTI_COLORS = ["#fff1bf", "#f4b515", "#08a832", "#0878d6", "#e43322"] as const;
 const logoUrl = `${import.meta.env.BASE_URL}logo.png`;
 const boardIndexes = Array.from({ length: 36 }, (_, index) => ({
@@ -126,6 +129,14 @@ interface InvalidMovePreview {
   startY: number;
   returnX: number;
   returnY: number;
+}
+
+interface ConflictBlockerHighlight {
+  id: number;
+  dieIds: string[];
+  color: string;
+  messageColor: string;
+  playerSlot?: TabletopSlot;
 }
 
 interface TrackedTurn {
@@ -384,6 +395,7 @@ function GameScreen({
   const [hasExplicitRerollSelection, setHasExplicitRerollSelection] = useState(false);
   const [dragPreview, setDragPreview] = useState<{ die: Die; x: number; y: number } | null>(null);
   const [invalidMovePreview, setInvalidMovePreview] = useState<InvalidMovePreview | null>(null);
+  const [conflictBlockerHighlight, setConflictBlockerHighlight] = useState<ConflictBlockerHighlight | null>(null);
   const [completionReward, setCompletionReward] = useState<CompletionReward | null>(null);
   const [winnerCelebration, setWinnerCelebration] = useState<WinnerCelebrationLayout | null>(null);
   const [turnPromptOpen, setTurnPromptOpen] = useState(false);
@@ -395,6 +407,8 @@ function GameScreen({
   const shellRef = useRef<HTMLElement | null>(null);
   const invalidMovePreviewId = useRef(0);
   const invalidMovePreviewTimer = useRef<number | null>(null);
+  const conflictBlockerHighlightId = useRef(0);
+  const conflictBlockerHighlightTimer = useRef<number | null>(null);
   const completionRewardId = useRef(0);
   const completionRewardActive = useRef(false);
   const completionRewardQueue = useRef<QueuedCompletionReward[]>([]);
@@ -431,16 +445,13 @@ function GameScreen({
   const winner = game.winnerId ? game.players.find((player) => player.id === game.winnerId) : undefined;
   const conflictDice = useMemo(() => conflictDieIds(game), [game]);
   const conflictCells = useMemo(() => conflictCellKeys(game), [game]);
-  const rewardPlayer = completionReward
-    ? game.players.find((player) => player.id === completionReward.playerId)
-    : undefined;
   const completionRewardOverlay: BoardCompletionReward | null = completionReward
     ? {
         id: completionReward.id,
         activeKey:
           completionReward.phase === "highlight" ? completionReward.completedKeys[completionReward.activeIndex] : null,
         bonusActions: completionReward.phase === "bonus" ? completionReward.completedKeys.length : null,
-        color: rewardPlayer ? playerColorCssVars[rewardPlayer.color] : activePlayerColor,
+        color: COMPLETION_FEEDBACK_COLOR,
         playerSlot: game.tabletopMode ? tabletopSlotForPlayer(game, completionReward.playerId) : undefined
       }
     : null;
@@ -555,6 +566,41 @@ function GameScreen({
     }
 
     setInvalidMovePreview(null);
+
+    if (conflictBlockerHighlightTimer.current !== null) {
+      window.clearTimeout(conflictBlockerHighlightTimer.current);
+      conflictBlockerHighlightTimer.current = null;
+    }
+
+    setConflictBlockerHighlight(null);
+  };
+
+  const showConflictBlockerHighlight = (dieIds: string[]) => {
+    if (conflictBlockerHighlightTimer.current !== null) {
+      window.clearTimeout(conflictBlockerHighlightTimer.current);
+      conflictBlockerHighlightTimer.current = null;
+    }
+
+    const uniqueDieIds = [...new Set(dieIds)];
+
+    if (uniqueDieIds.length === 0) {
+      setConflictBlockerHighlight(null);
+      return;
+    }
+
+    const id = conflictBlockerHighlightId.current + 1;
+    conflictBlockerHighlightId.current = id;
+    setConflictBlockerHighlight({
+      id,
+      dieIds: uniqueDieIds,
+      color: CONFLICT_BLOCKER_FEEDBACK_COLOR,
+      messageColor: INVALID_MOVE_FEEDBACK_COLOR,
+      playerSlot: game.tabletopMode ? tabletopSlotForPlayer(game, activePlayer.id) : undefined
+    });
+    conflictBlockerHighlightTimer.current = window.setTimeout(() => {
+      setConflictBlockerHighlight((current) => (current?.id === id ? null : current));
+      conflictBlockerHighlightTimer.current = null;
+    }, INVALID_MOVE_ANIMATION_MS);
   };
 
   const showCompletionReward = (reward: QueuedCompletionReward) => {
@@ -593,6 +639,10 @@ function GameScreen({
     return () => {
       if (invalidMovePreviewTimer.current !== null) {
         window.clearTimeout(invalidMovePreviewTimer.current);
+      }
+
+      if (conflictBlockerHighlightTimer.current !== null) {
+        window.clearTimeout(conflictBlockerHighlightTimer.current);
       }
 
       clearStackLongPress();
@@ -876,7 +926,10 @@ function GameScreen({
       returnPath?.from ?? (cell ? centerOfElement(cell) : { x: window.innerWidth / 2, y: window.innerHeight / 2 });
     const to = returnPath?.to ?? findRenderedDieCenter(die) ?? findTrayCenter(activePlayer.id);
 
-    showInvalidMoveReturn(die, from, to, { playerId: activePlayer.id, returnKind: "place" });
+    showInvalidMoveReturn(die, from, to, {
+      playerId: activePlayer.id,
+      returnKind: "place"
+    });
   };
 
   const selectedCountForGroup = (group: DiceValueGroup) =>
@@ -1034,6 +1087,7 @@ function GameScreen({
         showInvalidMoveReturn(die, from ?? { x: window.innerWidth / 2, y: window.innerHeight / 2 }, returnPath?.to, {
           returnKind: "move"
         });
+        showConflictBlockerHighlight(conflictBlockerDieIds(game, die, row, col));
       }
 
       onCommit(moveDie(game, die.id, row, col));
@@ -1042,6 +1096,7 @@ function GameScreen({
 
     if (wouldPlaceDieConflict(game, die.id, row, col)) {
       showInvalidPlacement(die, row, col, returnPath);
+      showConflictBlockerHighlight(conflictBlockerDieIds(game, die, row, col));
       onCommit(placeDie(game, die.id, row, col));
       return;
     }
@@ -1222,6 +1277,7 @@ function GameScreen({
       recentMoveHighlights={recentMoveHighlights}
       draggingDieId={transientDieId}
       completionReward={completionRewardOverlay}
+      conflictBlockerHighlight={conflictBlockerHighlight}
       tabletopMode={game.tabletopMode}
       activePlayerColor={activePlayerColor}
       onCell={handleCell}
@@ -1570,6 +1626,38 @@ function completionSegmentsForKey(key: string, game: GameState): CompletionSegme
   return [];
 }
 
+function conflictBlockerDieIds(game: GameState, die: Die, row: number, col: number): string[] {
+  const targetBox = boxIndex(row, col);
+
+  return game.dice
+    .filter((candidate) => {
+      if (candidate.id === die.id || !isOnBoard(candidate) || candidate.value !== die.value) {
+        return false;
+      }
+
+      return (
+        candidate.row === row ||
+        candidate.col === col ||
+        boxIndex(candidate.row as number, candidate.col as number) === targetBox
+      );
+    })
+    .map((candidate) => candidate.id);
+}
+
+function dieOutlineSegmentsForIds(game: GameState, dieIds: string[]): CompletionSegment[] {
+  const dieIdSet = new Set(dieIds);
+
+  return game.dice
+    .filter((die) => dieIdSet.has(die.id) && isOnBoard(die))
+    .map((die) => ({
+      row: die.row as number,
+      col: die.col as number,
+      rowSpan: 1,
+      colSpan: 1,
+      outline: "die"
+    }));
+}
+
 function completionSegmentStyle(segment: CompletionSegment, color: string, index: number): CSSProperties {
   return {
     "--completion-color": color,
@@ -1646,6 +1734,7 @@ function Board({
   recentMoveHighlights,
   draggingDieId,
   completionReward,
+  conflictBlockerHighlight,
   tabletopMode = false,
   activePlayerColor,
   onCell,
@@ -1661,6 +1750,7 @@ function Board({
   recentMoveHighlights: Map<string, PlayerColor>;
   draggingDieId: string | null;
   completionReward: BoardCompletionReward | null;
+  conflictBlockerHighlight: ConflictBlockerHighlight | null;
   tabletopMode?: boolean;
   activePlayerColor?: string;
   onCell: (row: number, col: number) => void;
@@ -1672,6 +1762,9 @@ function Board({
 }): ReactElement {
   const completionSegments = completionReward?.activeKey
     ? completionSegmentsForKey(completionReward.activeKey, game)
+    : [];
+  const conflictBlockerSegments = conflictBlockerHighlight
+    ? dieOutlineSegmentsForIds(game, conflictBlockerHighlight.dieIds)
     : [];
   const bonusLabel = completionReward?.bonusActions
     ? `+${completionReward.bonusActions} Action${completionReward.bonusActions === 1 ? "" : "s"}`
@@ -1735,12 +1828,37 @@ function Board({
             key={`${completionReward?.id}-${completionReward?.activeKey}-${index}`}
             style={completionSegmentStyle(
               segment,
-              completionReward?.color ?? activePlayerColor ?? "var(--cream)",
+              completionReward?.color ?? COMPLETION_FEEDBACK_COLOR,
               index
             )}
             aria-hidden="true"
           />
         ))}
+        {conflictBlockerSegments.map((segment, index) => (
+          <div
+            className="completion-highlight-segment is-dice-outline is-conflict-blocker"
+            key={`${conflictBlockerHighlight?.id}-${index}`}
+            style={completionSegmentStyle(
+              segment,
+              conflictBlockerHighlight?.color ?? CONFLICT_BLOCKER_FEEDBACK_COLOR,
+              index
+            )}
+            aria-hidden="true"
+          />
+        ))}
+        {conflictBlockerHighlight ? (
+          <div
+            className={`completion-bonus-pop conflict-message-pop ${
+              conflictBlockerHighlight.playerSlot ? `faces-${conflictBlockerHighlight.playerSlot}` : ""
+            }`}
+            key={`${conflictBlockerHighlight.id}-message`}
+            style={{ "--completion-color": conflictBlockerHighlight.messageColor } as CSSProperties}
+            role="status"
+            aria-live="polite"
+          >
+            Invalid move
+          </div>
+        ) : null}
         {completionReward?.bonusActions && bonusLabel ? (
           <div
             className={`completion-bonus-pop ${
