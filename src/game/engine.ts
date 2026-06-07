@@ -37,7 +37,7 @@ export function newGame(options: NewGameOptions): GameState {
   const dicePerPlayer = diceCountForPlayerCount(options.playerCount);
   const players: Player[] = Array.from({ length: options.playerCount }, (_, index) => ({
     id: `p${index + 1}`,
-    name: `Player ${index + 1}`,
+    name: options.playerNames?.[index]?.trim() || `Player ${index + 1}`,
     color: PLAYER_COLORS[index]
   }));
   const dice: Die[] = [];

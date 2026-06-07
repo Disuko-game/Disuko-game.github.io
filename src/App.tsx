@@ -5,6 +5,7 @@ import {
   useRef,
   useState,
   type CSSProperties,
+  type FormEvent,
   type PointerEvent as ReactPointerEvent,
   type ReactElement,
   type ReactNode
@@ -35,6 +36,39 @@ import {
 } from "./game/engine";
 import { groupDiceByValue, type DiceValueGroup } from "./game/diceOrdering";
 import { BOARD_SIZE, DICE_VALUES, type ActionMode, type DiceValue, type Die, type GameState, type Player, type PlayerColor } from "./game/types";
+import {
+  commitRoomGameState,
+  createCurrentProfile,
+  createRoom,
+  currentRoomStatus,
+  inviteFriendToRoom,
+  joinRoom,
+  joinRoomByCode,
+  leaveRoom,
+  loadCurrentProfile,
+  loadCurrentRooms,
+  loadFriendsState,
+  loadPublicRooms,
+  loadRoomBundle,
+  loadRoomInvites,
+  optimisticRoomAfterGameCommit,
+  playerIdForSeat,
+  respondToFriendRequest,
+  respondToRoomInvite,
+  sendFriendRequest,
+  startRoomIfReady,
+  subscribeToPlayerEvents,
+  subscribeToRoom,
+  updateCurrentProfileName,
+  type CurrentRoomSummary,
+  type FriendSummary,
+  type FriendsState,
+  type PublicRoomSummary,
+  type RoomBundle,
+  type RoomInviteSummary,
+  type RoomVisibility
+} from "./lib/disukoMultiplayer";
+import { isSupabaseConfigured, type DisukoProfileRow } from "./lib/supabase";
 import { isTabletopViewportSupported } from "./tabletopFit";
 
 const STORAGE_KEY = "disuko-save-v1";
@@ -97,9 +131,23 @@ type SetupStartOptions = {
   tabletopMode: boolean;
 };
 
+type AppView = "home" | "local-setup" | "local-game" | "online-games" | "online-create" | "online-join" | "friends" | "settings";
 type TabletopSlot = "top" | "right" | "bottom" | "left";
 type CompletionRewardPhase = "highlight" | "bonus";
 type InvalidReturnKind = "move" | "place";
+
+type CreateGameRequest = {
+  playerCount: 2 | 3 | 4;
+  invitedProfileIds: string[];
+  hasOpenSeats: boolean;
+};
+
+interface OnlineDashboardData {
+  friendsState: FriendsState;
+  currentRooms: CurrentRoomSummary[];
+  publicRooms: PublicRoomSummary[];
+  roomInvites: RoomInviteSummary[];
+}
 
 interface ViewportSize {
   width: number;
@@ -174,6 +222,7 @@ interface BoardCompletionReward {
 interface WinnerCelebrationLayout {
   playerId: string;
   playerNumber: number;
+  playerName: string;
   color: string;
   playerSlot: TabletopSlot;
   trayX: number;
@@ -195,8 +244,30 @@ interface CompletionSegment {
 export default function App(): ReactElement {
   const [booting, setBooting] = useState(true);
   const [game, setGame] = useState<GameState | null>(() => loadSavedGame());
-  const [showSetup, setShowSetup] = useState(false);
+  const [view, setView] = useState<AppView>("home");
   const [showMenu, setShowMenu] = useState(false);
+  const [profile, setProfile] = useState<DisukoProfileRow | null>(null);
+  const [profileName, setProfileName] = useState("");
+  const [friendsState, setFriendsState] = useState<FriendsState>(emptyFriendsState);
+  const [currentRooms, setCurrentRooms] = useState<CurrentRoomSummary[]>([]);
+  const [publicRooms, setPublicRooms] = useState<PublicRoomSummary[]>([]);
+  const [roomInvites, setRoomInvites] = useState<RoomInviteSummary[]>([]);
+  const [activeRoomId, setActiveRoomId] = useState<string | null>(null);
+  const [onlineLoading, setOnlineLoading] = useState(true);
+  const [onlineBusy, setOnlineBusy] = useState(false);
+  const [onlineError, setOnlineError] = useState<string | null>(null);
+  const currentRoomSubscriptionKey = useMemo(
+    () => currentRooms.map((summary) => summary.room.id).sort().join("|"),
+    [currentRooms]
+  );
+  const joinablePublicRooms = useMemo(() => {
+    const currentRoomIds = new Set(currentRooms.map((summary) => summary.room.id));
+
+    return publicRooms.filter((summary) => !currentRoomIds.has(summary.room.id));
+  }, [currentRooms, publicRooms]);
+  const hasOnlineAlert = profile
+    ? roomInvites.length > 0 || currentRooms.some((summary) => currentRoomStatus(summary.room, profile.id) === "your-turn")
+    : false;
 
   useEffect(() => {
     const timer = window.setTimeout(() => setBooting(false), 900);
@@ -212,38 +283,389 @@ export default function App(): ReactElement {
     window.localStorage.setItem(STORAGE_KEY, serializeGame(game));
   }, [game]);
 
+  const applyDashboardData = (data: OnlineDashboardData) => {
+    setFriendsState(data.friendsState);
+    setCurrentRooms(data.currentRooms);
+    setPublicRooms(data.publicRooms);
+    setRoomInvites(data.roomInvites);
+  };
+
+  const refreshDashboard = async (currentProfile = profile) => {
+    if (!currentProfile) {
+      return;
+    }
+
+    applyDashboardData(await loadOnlineDashboard(currentProfile.id));
+  };
+
+  useEffect(() => {
+    if (!isSupabaseConfigured()) {
+      setOnlineLoading(false);
+      return;
+    }
+
+    let canceled = false;
+
+    const load = async () => {
+      try {
+        const nextProfile = await loadCurrentProfile();
+
+        if (canceled) {
+          return;
+        }
+
+        setProfile(nextProfile);
+        setProfileName(nextProfile?.display_name ?? "");
+
+        if (nextProfile) {
+          const dashboard = await loadOnlineDashboard(nextProfile.id);
+
+          if (!canceled) {
+            applyDashboardData(dashboard);
+          }
+        }
+      } catch (caughtError) {
+        if (!canceled) {
+          setOnlineError(formatError(caughtError));
+        }
+      } finally {
+        if (!canceled) {
+          setOnlineLoading(false);
+        }
+      }
+    };
+
+    void load();
+
+    return () => {
+      canceled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!profile) {
+      return;
+    }
+
+    return subscribeToPlayerEvents(profile.id, () => {
+      void refreshDashboard(profile);
+    });
+  }, [profile]);
+
+  useEffect(() => {
+    if (!profile || !currentRoomSubscriptionKey) {
+      return;
+    }
+
+    const unsubscribes = currentRoomSubscriptionKey
+      .split("|")
+      .filter(Boolean)
+      .map((roomId) => subscribeToRoom(roomId, () => {
+        void refreshDashboard(profile);
+      }));
+
+    return () => {
+      unsubscribes.forEach((unsubscribe) => unsubscribe());
+    };
+  }, [profile, currentRoomSubscriptionKey]);
+
   const startGame = ({ playerCount, tabletopMode }: SetupStartOptions) => {
     setGame(newGame({ playerCount, tabletopMode }));
-    setShowSetup(false);
     setShowMenu(false);
+    setView("local-game");
+  };
+
+  const handleProfileSave = async (displayName: string) => {
+    setOnlineBusy(true);
+    setOnlineError(null);
+
+    try {
+      const nextProfile = profile
+        ? await updateCurrentProfileName(profile.id, displayName)
+        : await createCurrentProfile(displayName);
+
+      setProfile(nextProfile);
+      setProfileName(nextProfile.display_name);
+      await refreshDashboard(nextProfile);
+    } catch (caughtError) {
+      setOnlineError(formatError(caughtError));
+    } finally {
+      setOnlineBusy(false);
+    }
+  };
+
+  const handleFriendRequest = async (friendCode: string) => {
+    if (!profile) {
+      return;
+    }
+
+    setOnlineBusy(true);
+    setOnlineError(null);
+
+    try {
+      await sendFriendRequest(profile.id, friendCode);
+      await refreshDashboard(profile);
+    } catch (caughtError) {
+      setOnlineError(formatError(caughtError));
+    } finally {
+      setOnlineBusy(false);
+    }
+  };
+
+  const handleFriendResponse = async (request: FriendSummary, status: "accepted" | "declined" | "canceled") => {
+    if (!profile) {
+      return;
+    }
+
+    setOnlineBusy(true);
+    setOnlineError(null);
+
+    try {
+      await respondToFriendRequest(request.request.id, status);
+      await refreshDashboard(profile);
+    } catch (caughtError) {
+      setOnlineError(formatError(caughtError));
+    } finally {
+      setOnlineBusy(false);
+    }
+  };
+
+  const handleCreateOnlineGame = async ({ playerCount, invitedProfileIds, hasOpenSeats }: CreateGameRequest) => {
+    if (!profile) {
+      return;
+    }
+
+    setOnlineBusy(true);
+    setOnlineError(null);
+
+    try {
+      const bundle = await createRoom(profile.id, {
+        playerCount,
+        visibility: hasOpenSeats ? "public" : "private"
+      });
+
+      await Promise.all(invitedProfileIds.map((friendProfileId) => inviteFriendToRoom(bundle.room.id, profile.id, friendProfileId)));
+      await refreshDashboard(profile);
+      setActiveRoomId(bundle.room.id);
+    } catch (caughtError) {
+      setOnlineError(formatError(caughtError));
+    } finally {
+      setOnlineBusy(false);
+    }
+  };
+
+  const handleJoinByCode = async (joinCode: string) => {
+    if (!profile) {
+      return;
+    }
+
+    setOnlineBusy(true);
+    setOnlineError(null);
+
+    try {
+      const bundle = await joinRoomByCode(profile.id, joinCode);
+      setActiveRoomId(bundle.room.id);
+    } catch (caughtError) {
+      setOnlineError(formatError(caughtError));
+    } finally {
+      setOnlineBusy(false);
+    }
+  };
+
+  const handleJoinRoom = async (roomId: string) => {
+    if (!profile) {
+      return;
+    }
+
+    setOnlineBusy(true);
+    setOnlineError(null);
+
+    try {
+      const bundle = await joinRoom(profile.id, roomId);
+      setActiveRoomId(bundle.room.id);
+    } catch (caughtError) {
+      setOnlineError(formatError(caughtError));
+    } finally {
+      setOnlineBusy(false);
+    }
+  };
+
+  const handleRoomInvite = async (invite: RoomInviteSummary, status: "accepted" | "declined") => {
+    if (!profile) {
+      return;
+    }
+
+    setOnlineBusy(true);
+    setOnlineError(null);
+
+    try {
+      const bundle = await respondToRoomInvite(invite.invite, profile.id, status);
+      await refreshDashboard(profile);
+
+      if (bundle) {
+        setActiveRoomId(bundle.room.id);
+      }
+    } catch (caughtError) {
+      setOnlineError(formatError(caughtError));
+    } finally {
+      setOnlineBusy(false);
+    }
   };
 
   if (booting) {
     return <SplashScreen />;
   }
 
-  if (!game || showSetup) {
-    return <SetupScreen onStart={startGame} onCancel={game ? () => setShowSetup(false) : undefined} />;
+  if (activeRoomId && profile) {
+    return (
+      <OnlineRoomSession
+        roomId={activeRoomId}
+        profile={profile}
+        friends={friendsState.friends}
+        onExit={() => {
+          setActiveRoomId(null);
+          void refreshDashboard(profile);
+          setView("online-games");
+        }}
+      />
+    );
+  }
+
+  if (isSupabaseConfigured() && onlineLoading) {
+    return <OnlineLoadingScreen />;
+  }
+
+  if (isSupabaseConfigured() && !profile) {
+    return (
+      <ProfileGate
+        initialName={profileName}
+        busy={onlineBusy}
+        error={onlineError}
+        onSubmit={handleProfileSave}
+      />
+    );
+  }
+
+  if (!isSupabaseConfigured() && isOnlineView(view)) {
+    return <OnlineSetupNeeded onBack={() => setView("home")} />;
+  }
+
+  if (view === "local-game" && game) {
+    return (
+      <GameScreen
+        game={game}
+        onCommit={setGame}
+        onOpenMenu={() => setShowMenu(true)}
+        onNewGame={() => setView("local-setup")}
+      >
+        {showMenu && !game.tabletopMode ? (
+          <MenuOverlay
+            game={game}
+            onResume={() => setShowMenu(false)}
+            onNewGame={() => {
+              setShowMenu(false);
+              setView("local-setup");
+            }}
+          />
+        ) : null}
+      </GameScreen>
+    );
+  }
+
+  if (view === "local-setup" || view === "local-game") {
+    return (
+      <LocalSetupScreen
+        onStart={startGame}
+        onCancel={() => setView("home")}
+      />
+    );
+  }
+
+  if (view === "online-games" && profile) {
+    return (
+      <OnlineGamesScreen
+        profile={profile}
+        rooms={currentRooms}
+        invites={roomInvites}
+        busy={onlineBusy}
+        error={onlineError}
+        onBack={() => setView("home")}
+        onOpenRoom={(roomId) => {
+          setOnlineError(null);
+          setActiveRoomId(roomId);
+        }}
+        onAcceptInvite={(invite) => void handleRoomInvite(invite, "accepted")}
+        onDeclineInvite={(invite) => void handleRoomInvite(invite, "declined")}
+        onCreate={() => setView("online-create")}
+        onJoin={() => setView("online-join")}
+        onRefresh={() => void refreshDashboard(profile)}
+      />
+    );
+  }
+
+  if (view === "online-create" && profile) {
+    return (
+      <OnlineCreateGameScreen
+        profile={profile}
+        friends={friendsState.friends}
+        busy={onlineBusy}
+        error={onlineError}
+        onBack={() => setView("online-games")}
+        onCreate={(request) => void handleCreateOnlineGame(request)}
+      />
+    );
+  }
+
+  if (view === "online-join" && profile) {
+    return (
+      <OnlineJoinGameScreen
+        rooms={joinablePublicRooms}
+        busy={onlineBusy}
+        error={onlineError}
+        onBack={() => setView("online-games")}
+        onJoinByCode={(joinCode) => void handleJoinByCode(joinCode)}
+        onJoinRoom={(roomId) => void handleJoinRoom(roomId)}
+        onRefresh={() => void refreshDashboard(profile)}
+      />
+    );
+  }
+
+  if (view === "friends" && profile) {
+    return (
+      <FriendsScreen
+        profile={profile}
+        friendsState={friendsState}
+        busy={onlineBusy}
+        error={onlineError}
+        onBack={() => setView("home")}
+        onSendRequest={(friendCode) => void handleFriendRequest(friendCode)}
+        onRespond={(request, status) => void handleFriendResponse(request, status)}
+      />
+    );
+  }
+
+  if (view === "settings" && profile) {
+    return (
+      <SettingsScreen
+        profile={profile}
+        busy={onlineBusy}
+        error={onlineError}
+        onBack={() => setView("home")}
+        onSaveProfile={(displayName) => void handleProfileSave(displayName)}
+      />
+    );
   }
 
   return (
-    <GameScreen
-      game={game}
-      onCommit={setGame}
-      onOpenMenu={() => setShowMenu(true)}
-      onNewGame={() => setShowSetup(true)}
-    >
-      {showMenu && !game.tabletopMode ? (
-        <MenuOverlay
-          game={game}
-          onResume={() => setShowMenu(false)}
-          onNewGame={() => {
-            setShowMenu(false);
-            setShowSetup(true);
-          }}
-        />
-      ) : null}
-    </GameScreen>
+    <HomeScreen
+      hasLocalGame={Boolean(game)}
+      hasOnlineAlert={hasOnlineAlert}
+      onlineName={profile?.display_name ?? null}
+      onLocalGame={() => setView(game ? "local-game" : "local-setup")}
+      onOnlineGame={() => setView("online-games")}
+      onFriends={() => setView("friends")}
+      onSettings={() => setView("settings")}
+    />
   );
 }
 
@@ -298,7 +720,1175 @@ function useViewportSize(): ViewportSize {
   return viewportSize;
 }
 
-function SetupScreen({
+const emptyFriendsState: FriendsState = {
+  friends: [],
+  incoming: [],
+  outgoing: []
+};
+
+function isOnlineView(view: AppView): boolean {
+  return view === "online-games" || view === "online-create" || view === "online-join" || view === "friends" || view === "settings";
+}
+
+async function loadOnlineDashboard(profileId: string): Promise<OnlineDashboardData> {
+  const [friendsState, currentRooms, publicRooms, roomInvites] = await Promise.all([
+    loadFriendsState(profileId),
+    loadCurrentRooms(profileId),
+    loadPublicRooms(),
+    loadRoomInvites(profileId)
+  ]);
+
+  return {
+    friendsState,
+    currentRooms,
+    publicRooms,
+    roomInvites
+  };
+}
+
+function OnlineLoadingScreen(): ReactElement {
+  return (
+    <main className="setup-screen">
+      <section className="setup-panel online-panel">
+        <img className="setup-logo" src={logoUrl} alt="Disuko" />
+        <p className="setup-copy">Connecting to Supabase...</p>
+      </section>
+    </main>
+  );
+}
+
+function OnlineSetupNeeded({ onBack }: { onBack: () => void }): ReactElement {
+  return (
+    <main className="setup-screen">
+      <section className="setup-panel online-panel" aria-labelledby="online-config-title">
+        <img className="setup-logo" src={logoUrl} alt="Disuko" />
+        <h1 id="online-config-title">Online setup needed</h1>
+        <p className="setup-copy">
+          Add your Supabase publishable key to <strong>.env.local</strong>, using <strong>.env.example</strong> as the template.
+        </p>
+        <div className="setup-actions">
+          <button className="primary-button" type="button" onClick={onBack}>
+            Back
+          </button>
+        </div>
+      </section>
+    </main>
+  );
+}
+
+function ProfileGate({
+  initialName,
+  busy,
+  error,
+  onSubmit
+}: {
+  initialName: string;
+  busy: boolean;
+  error: string | null;
+  onSubmit: (displayName: string) => void;
+}): ReactElement {
+  const [displayName, setDisplayName] = useState(initialName);
+
+  useEffect(() => {
+    setDisplayName(initialName);
+  }, [initialName]);
+
+  const handleSubmit = (event: FormEvent) => {
+    event.preventDefault();
+    onSubmit(displayName);
+  };
+
+  return (
+    <main className="setup-screen">
+      <section className="setup-panel profile-gate-panel" aria-labelledby="profile-gate-title">
+        <img className="setup-logo" src={logoUrl} alt="Disuko" />
+        <h1 id="profile-gate-title">Create username</h1>
+        <p className="setup-copy">This name appears in online games and friend invites.</p>
+        {error ? <p className="setup-warning" role="alert">{error}</p> : null}
+        <form className="online-card profile-gate-form" onSubmit={handleSubmit}>
+          <input
+            aria-label="Username"
+            maxLength={32}
+            placeholder="Username"
+            value={displayName}
+            onChange={(event) => setDisplayName(event.currentTarget.value)}
+          />
+          <button className="primary-button" type="submit" disabled={busy}>
+            Continue
+          </button>
+        </form>
+      </section>
+    </main>
+  );
+}
+
+function HomeScreen({
+  hasLocalGame,
+  hasOnlineAlert,
+  onlineName,
+  onLocalGame,
+  onOnlineGame,
+  onFriends,
+  onSettings
+}: {
+  hasLocalGame: boolean;
+  hasOnlineAlert: boolean;
+  onlineName: string | null;
+  onLocalGame: () => void;
+  onOnlineGame: () => void;
+  onFriends: () => void;
+  onSettings: () => void;
+}): ReactElement {
+  return (
+    <main className="setup-screen home-screen">
+      <section className="setup-panel home-panel" aria-labelledby="home-title">
+        <img className="setup-logo" src={logoUrl} alt="Disuko" />
+        <h1 id="home-title">Disuko</h1>
+        {onlineName ? <p className="setup-copy">Playing as {onlineName}</p> : null}
+
+        <div className="home-action-grid" aria-label="Main menu">
+          <button className="home-action-button is-local" type="button" onClick={onLocalGame}>
+            <strong>Local Game</strong>
+            <span>{hasLocalGame ? "Resume table" : "Choose players"}</span>
+          </button>
+          <button className="home-action-button is-online" type="button" onClick={onOnlineGame}>
+            {hasOnlineAlert ? <span className="home-alert-badge" aria-label="Online action needed">!</span> : null}
+            <strong>Online Game</strong>
+            <span>Current games</span>
+          </button>
+          <button className="home-action-button is-friends" type="button" onClick={onFriends}>
+            <strong>Friends</strong>
+            <span>Codes and requests</span>
+          </button>
+          <button className="home-action-button is-settings" type="button" onClick={onSettings}>
+            <strong>Settings</strong>
+            <span>Profile</span>
+          </button>
+        </div>
+      </section>
+    </main>
+  );
+}
+
+function OnlineFrame({
+  title,
+  onBack,
+  children
+}: {
+  title: string;
+  onBack: () => void;
+  children: ReactNode;
+}): ReactElement {
+  const titleId = `${title.toLowerCase().replace(/[^a-z0-9]+/gu, "-")}-title`;
+
+  return (
+    <main className="setup-screen online-screen">
+      <section className="setup-panel online-panel" aria-labelledby={titleId}>
+        <div className="online-heading">
+          <img className="setup-logo" src={logoUrl} alt="Disuko" />
+          <button className="secondary-button online-back" type="button" onClick={onBack}>
+            Back
+          </button>
+        </div>
+        <h1 id={titleId}>{title}</h1>
+        {children}
+      </section>
+    </main>
+  );
+}
+
+function OnlineGamesScreen({
+  profile,
+  rooms,
+  invites,
+  busy,
+  error,
+  onBack,
+  onOpenRoom,
+  onAcceptInvite,
+  onDeclineInvite,
+  onCreate,
+  onJoin,
+  onRefresh
+}: {
+  profile: DisukoProfileRow;
+  rooms: CurrentRoomSummary[];
+  invites: RoomInviteSummary[];
+  busy: boolean;
+  error: string | null;
+  onBack: () => void;
+  onOpenRoom: (roomId: string) => void;
+  onAcceptInvite: (invite: RoomInviteSummary) => void;
+  onDeclineInvite: (invite: RoomInviteSummary) => void;
+  onCreate: () => void;
+  onJoin: () => void;
+  onRefresh: () => void;
+}): ReactElement {
+  return (
+    <OnlineFrame title="Online games" onBack={onBack}>
+      {error ? <p className="setup-warning" role="alert">{error}</p> : null}
+      <div className="online-stack">
+        {invites.length > 0 ? (
+          <RoomInviteList
+            invites={invites}
+            disabled={busy}
+            onAccept={onAcceptInvite}
+            onDecline={onDeclineInvite}
+          />
+        ) : null}
+        <CurrentGamesList
+          rooms={rooms}
+          profileId={profile.id}
+          disabled={busy}
+          onOpen={onOpenRoom}
+        />
+        <section className="online-card online-bottom-actions">
+          <div className="online-card-title-row">
+            <h2>Play online</h2>
+            <button className="secondary-button online-small-button" type="button" onClick={onRefresh}>
+              Refresh
+            </button>
+          </div>
+          <div className="online-action-row">
+            <button className="primary-button" type="button" disabled={busy} onClick={onCreate}>
+              Create New Game
+            </button>
+            <button className="secondary-button" type="button" disabled={busy} onClick={onJoin}>
+              Join a Game
+            </button>
+          </div>
+        </section>
+      </div>
+    </OnlineFrame>
+  );
+}
+
+function RoomInviteList({
+  invites,
+  disabled,
+  onAccept,
+  onDecline
+}: {
+  invites: RoomInviteSummary[];
+  disabled: boolean;
+  onAccept: (invite: RoomInviteSummary) => void;
+  onDecline: (invite: RoomInviteSummary) => void;
+}): ReactElement {
+  return (
+    <section className="online-card">
+      <div className="online-card-title-row">
+        <h2>Game invites</h2>
+        <span className="online-count-chip">{invites.length}</span>
+      </div>
+      <div className="online-list">
+        {invites.map((invite) => (
+          <article className="online-list-item" key={invite.invite.id}>
+            <div>
+              <strong>{invite.sender ? `Invite from ${invite.sender.display_name}` : "Game invite"}</strong>
+              <span>{invite.sender?.display_name ?? "A friend"} invited you.</span>
+            </div>
+            <button className="primary-button online-small-button" type="button" disabled={disabled} onClick={() => onAccept(invite)}>
+              Accept
+            </button>
+            <button className="secondary-button online-small-button" type="button" disabled={disabled} onClick={() => onDecline(invite)}>
+              Decline
+            </button>
+          </article>
+        ))}
+      </div>
+    </section>
+  );
+}
+
+function OnlineJoinGameScreen({
+  rooms,
+  busy,
+  error,
+  onBack,
+  onJoinByCode,
+  onJoinRoom,
+  onRefresh
+}: {
+  rooms: PublicRoomSummary[];
+  busy: boolean;
+  error: string | null;
+  onBack: () => void;
+  onJoinByCode: (joinCode: string) => void;
+  onJoinRoom: (roomId: string) => void;
+  onRefresh: () => void;
+}): ReactElement {
+  const [joinCode, setJoinCode] = useState("");
+
+  const handleSubmit = (event: FormEvent) => {
+    event.preventDefault();
+    onJoinByCode(joinCode);
+  };
+
+  return (
+    <OnlineFrame title="Join a game" onBack={onBack}>
+      {error ? <p className="setup-warning" role="alert">{error}</p> : null}
+      <div className="online-stack">
+        <section className="online-card">
+          <h2>Invite code</h2>
+          <form className="online-inline-form" onSubmit={handleSubmit}>
+            <input
+              aria-label="Invite code"
+              placeholder="Invite code"
+              value={joinCode}
+              onChange={(event) => setJoinCode(event.currentTarget.value.toUpperCase())}
+            />
+            <button className="primary-button" type="submit" disabled={busy}>
+              Join
+            </button>
+          </form>
+        </section>
+        <section className="online-card">
+          <div className="online-card-title-row">
+            <h2>Open games</h2>
+            <button className="secondary-button online-small-button" type="button" disabled={busy} onClick={onRefresh}>
+              Refresh
+            </button>
+          </div>
+          {rooms.length === 0 ? <p className="online-empty">No public games are waiting.</p> : null}
+          <div className="online-list">
+            {rooms.map((summary) => (
+              <article className="online-list-item" key={summary.room.id}>
+                <div>
+                  <strong>{summary.host ? `${summary.host.display_name}'s open game` : "Open game"}</strong>
+                  <span>
+                    {summary.host?.display_name ?? "Host"} - {summary.joinedSeats}/{summary.room.player_count} seats
+                  </span>
+                </div>
+                <button className="secondary-button online-small-button" type="button" disabled={busy} onClick={() => onJoinRoom(summary.room.id)}>
+                  Join
+                </button>
+              </article>
+            ))}
+          </div>
+        </section>
+      </div>
+    </OnlineFrame>
+  );
+}
+
+function FriendsScreen({
+  profile,
+  friendsState,
+  busy,
+  error,
+  onBack,
+  onSendRequest,
+  onRespond
+}: {
+  profile: DisukoProfileRow;
+  friendsState: FriendsState;
+  busy: boolean;
+  error: string | null;
+  onBack: () => void;
+  onSendRequest: (friendCode: string) => void;
+  onRespond: (request: FriendSummary, status: "accepted" | "declined" | "canceled") => void;
+}): ReactElement {
+  const [friendCode, setFriendCode] = useState("");
+
+  const handleSubmit = (event: FormEvent) => {
+    event.preventDefault();
+    onSendRequest(friendCode);
+    setFriendCode("");
+  };
+
+  return (
+    <OnlineFrame title="Friends" onBack={onBack}>
+      {error ? <p className="setup-warning" role="alert">{error}</p> : null}
+      <div className="online-stack">
+        <section className="online-card">
+          <div className="online-profile-row">
+            <div>
+              <span className="online-label">Username</span>
+              <strong>{profile.display_name}</strong>
+            </div>
+            <div>
+              <span className="online-label">Friend code</span>
+              <strong>{profile.friend_code}</strong>
+            </div>
+          </div>
+          <form className="online-inline-form" onSubmit={handleSubmit}>
+            <input
+              aria-label="Friend code"
+              placeholder="Friend code"
+              value={friendCode}
+              onChange={(event) => setFriendCode(event.currentTarget.value.toUpperCase())}
+            />
+            <button className="secondary-button" type="submit" disabled={busy}>
+              Add
+            </button>
+          </form>
+        </section>
+        <section className="online-card">
+          <h2>Friend list</h2>
+          <FriendRequestList
+            incoming={friendsState.incoming}
+            outgoing={friendsState.outgoing}
+            friends={friendsState.friends}
+            disabled={busy}
+            onRespond={async (request, status) => onRespond(request, status)}
+          />
+        </section>
+      </div>
+    </OnlineFrame>
+  );
+}
+
+function SettingsScreen({
+  profile,
+  busy,
+  error,
+  onBack,
+  onSaveProfile
+}: {
+  profile: DisukoProfileRow;
+  busy: boolean;
+  error: string | null;
+  onBack: () => void;
+  onSaveProfile: (displayName: string) => void;
+}): ReactElement {
+  const [displayName, setDisplayName] = useState(profile.display_name);
+
+  useEffect(() => {
+    setDisplayName(profile.display_name);
+  }, [profile.display_name]);
+
+  const handleSubmit = (event: FormEvent) => {
+    event.preventDefault();
+    onSaveProfile(displayName);
+  };
+
+  return (
+    <OnlineFrame title="Settings" onBack={onBack}>
+      {error ? <p className="setup-warning" role="alert">{error}</p> : null}
+      <div className="online-stack">
+        <section className="online-card">
+          <h2>Profile</h2>
+          <form className="online-inline-form" onSubmit={handleSubmit}>
+            <input
+              aria-label="Username"
+              maxLength={32}
+              value={displayName}
+              onChange={(event) => setDisplayName(event.currentTarget.value)}
+            />
+            <button className="primary-button" type="submit" disabled={busy}>
+              Save
+            </button>
+          </form>
+          <div className="online-profile-row">
+            <div>
+              <span className="online-label">Friend code</span>
+              <strong>{profile.friend_code}</strong>
+            </div>
+          </div>
+        </section>
+      </div>
+    </OnlineFrame>
+  );
+}
+
+function OnlineCreateGameScreen({
+  profile,
+  friends,
+  busy,
+  error,
+  onBack,
+  onCreate
+}: {
+  profile: DisukoProfileRow;
+  friends: FriendSummary[];
+  busy: boolean;
+  error: string | null;
+  onBack: () => void;
+  onCreate: (request: CreateGameRequest) => void;
+}): ReactElement {
+  const [guestSlots, setGuestSlots] = useState<Array<{ enabled: boolean; profile: DisukoProfileRow | null }>>([
+    { enabled: true, profile: null },
+    { enabled: false, profile: null },
+    { enabled: false, profile: null }
+  ]);
+  const [pickerIndex, setPickerIndex] = useState<number | null>(null);
+  const enabledGuests = guestSlots.filter((slot) => slot.enabled);
+  const playerCount = (1 + enabledGuests.length) as 2 | 3 | 4;
+  const invitedProfileIds = enabledGuests
+    .map((slot) => slot.profile?.id)
+    .filter((profileId): profileId is string => Boolean(profileId));
+  const hasOpenSeats = enabledGuests.some((slot) => !slot.profile);
+
+  const updateGuestSlot = (index: number, nextSlot: { enabled: boolean; profile: DisukoProfileRow | null }) => {
+    setGuestSlots((currentSlots) => currentSlots.map((slot, slotIndex) => slotIndex === index ? nextSlot : slot));
+  };
+
+  const enableGuestSlot = (index: number) => {
+    updateGuestSlot(index, { enabled: true, profile: null });
+    setPickerIndex(index);
+  };
+
+  const removeGuestSlot = (index: number) => {
+    if (index === 0) {
+      updateGuestSlot(index, { enabled: true, profile: null });
+      return;
+    }
+
+    updateGuestSlot(index, { enabled: false, profile: null });
+  };
+
+  const chooseFriend = (friendProfile: DisukoProfileRow | null) => {
+    if (pickerIndex === null) {
+      return;
+    }
+
+    updateGuestSlot(pickerIndex, { enabled: true, profile: friendProfile });
+    setPickerIndex(null);
+  };
+
+  const availableFriends = useMemo(() => {
+    if (pickerIndex === null) {
+      return friends;
+    }
+
+    const selectedIds = new Set(
+      guestSlots
+        .map((slot, index) => index === pickerIndex ? null : slot.profile?.id)
+        .filter((profileId): profileId is string => Boolean(profileId))
+    );
+
+    return friends.filter((friend) => !selectedIds.has(friend.profile.id));
+  }, [friends, guestSlots, pickerIndex]);
+
+  return (
+    <OnlineFrame title="Create game" onBack={onBack}>
+      {error ? <p className="setup-warning" role="alert">{error}</p> : null}
+      <div className="online-stack">
+        <section className="online-card create-game-card">
+          <div className="create-slot-grid" aria-label="Player slots">
+            <article className="create-slot is-you">
+              <strong>{profile.display_name}</strong>
+              <span>You</span>
+            </article>
+            {guestSlots.map((slot, index) => (
+              <article className={`create-slot ${slot.enabled ? "is-enabled" : "is-disabled"}`} key={index}>
+                {slot.enabled ? (
+                  <>
+                    <button className="create-slot-main" type="button" onClick={() => setPickerIndex(index)}>
+                      <strong>{slot.profile?.display_name ?? "Open seat"}</strong>
+                      <span>{slot.profile ? "Invited friend" : index === 0 ? "Second player" : `Player ${index + 2}`}</span>
+                    </button>
+                    {index > 0 ? (
+                      <button className="create-slot-remove" type="button" onClick={() => removeGuestSlot(index)}>
+                        Remove
+                      </button>
+                    ) : null}
+                  </>
+                ) : (
+                  <button className="create-slot-add" type="button" onClick={() => enableGuestSlot(index)}>
+                    <strong>Add</strong>
+                    <span>Player {index + 2}</span>
+                  </button>
+                )}
+              </article>
+            ))}
+          </div>
+          <p className="online-empty">
+            Open seats appear in Join a Game. Friend seats send invites and fill when accepted.
+          </p>
+          <button
+            className="primary-button"
+            type="button"
+            disabled={busy}
+            onClick={() => onCreate({ playerCount, invitedProfileIds, hasOpenSeats })}
+          >
+            Create Game
+          </button>
+        </section>
+      </div>
+      {pickerIndex !== null ? (
+        <FriendPicker
+          friends={availableFriends}
+          slotLabel={`Player ${pickerIndex + 2}`}
+          disabled={busy}
+          onChoose={chooseFriend}
+          onClose={() => setPickerIndex(null)}
+        />
+      ) : null}
+    </OnlineFrame>
+  );
+}
+
+function FriendPicker({
+  friends,
+  slotLabel,
+  disabled,
+  onChoose,
+  onClose
+}: {
+  friends: FriendSummary[];
+  slotLabel: string;
+  disabled: boolean;
+  onChoose: (profile: DisukoProfileRow | null) => void;
+  onClose: () => void;
+}): ReactElement {
+  return createPortal(
+    <div className="friend-picker-backdrop" role="dialog" aria-modal="true" aria-labelledby="friend-picker-title">
+      <section className="friend-picker-panel">
+        <h2 id="friend-picker-title">{slotLabel}</h2>
+        <button className="secondary-button" type="button" disabled={disabled} onClick={() => onChoose(null)}>
+          Leave Open
+        </button>
+        <div className="online-list">
+          {friends.map((friend) => (
+            <article className="online-list-item" key={friend.profile.id}>
+              <div>
+                <strong>{friend.profile.display_name}</strong>
+                <span>{friend.profile.friend_code}</span>
+              </div>
+              <button className="primary-button online-small-button" type="button" disabled={disabled} onClick={() => onChoose(friend.profile)}>
+                Select
+              </button>
+            </article>
+          ))}
+          {friends.length === 0 ? <p className="online-empty">No available friends for this seat.</p> : null}
+        </div>
+        <button className="secondary-button" type="button" onClick={onClose}>
+          Cancel
+        </button>
+      </section>
+    </div>,
+    document.body
+  );
+}
+
+function CurrentGamesList({
+  rooms,
+  profileId,
+  disabled,
+  onOpen
+}: {
+  rooms: CurrentRoomSummary[];
+  profileId: string;
+  disabled: boolean;
+  onOpen: (roomId: string) => void;
+}): ReactElement {
+  return (
+    <section className="online-card current-games-card">
+      <div className="online-card-title-row">
+        <h2>Current games</h2>
+        <span className="online-count-chip">{rooms.length}</span>
+      </div>
+      {rooms.length === 0 ? <p className="online-empty">No current games yet.</p> : null}
+      <div className="online-list current-games-list">
+        {rooms.map((summary) => {
+          const status = currentRoomStatus(summary.room, profileId);
+          const playersLabel = currentRoomPlayersLabel(summary, profileId);
+          const detail = currentRoomDetail(summary, profileId);
+
+          return (
+            <article className={`online-list-item current-game-item is-${status}`} key={summary.room.id}>
+              <div className="current-game-main">
+                <div className="current-game-title-row">
+                  <strong>{currentRoomTitle(summary, profileId)}</strong>
+                  <span className={`online-turn-pill is-${status}`}>{currentRoomStatusLabel(status)}</span>
+                </div>
+                <span>{playersLabel}</span>
+                <span>{detail}</span>
+              </div>
+              <button
+                className={status === "your-turn" ? "primary-button online-small-button" : "secondary-button online-small-button"}
+                type="button"
+                disabled={disabled}
+                onClick={() => onOpen(summary.room.id)}
+              >
+                Open
+              </button>
+            </article>
+          );
+        })}
+      </div>
+    </section>
+  );
+}
+
+function currentRoomStatusLabel(status: ReturnType<typeof currentRoomStatus>): string {
+  if (status === "your-turn") {
+    return "Your turn";
+  }
+
+  if (status === "waiting") {
+    return "Waiting";
+  }
+
+  if (status === "finished") {
+    return "Finished";
+  }
+
+  return "Lobby";
+}
+
+function currentRoomTitle(summary: CurrentRoomSummary, profileId: string): string {
+  const otherPlayers = summary.players
+    .filter((player) => player.profile_id !== profileId)
+    .map((player) => player.profile.display_name);
+
+  if (otherPlayers.length > 0) {
+    return `Game with ${otherPlayers.join(", ")}`;
+  }
+
+  if (summary.room.host_profile_id === profileId) {
+    return "Your game";
+  }
+
+  return "Online game";
+}
+
+function currentRoomPlayersLabel(summary: CurrentRoomSummary, profileId: string): string {
+  const otherPlayers = summary.players
+    .filter((player) => player.profile_id !== profileId)
+    .map((player) => player.profile.display_name);
+
+  if (otherPlayers.length === 0) {
+    return "Waiting for players";
+  }
+
+  return `With ${otherPlayers.join(", ")}`;
+}
+
+function currentRoomDetail(summary: CurrentRoomSummary, profileId: string): string {
+  const status = currentRoomStatus(summary.room, profileId);
+
+  if (status === "lobby") {
+    return `${roomVisibilityLabel(summary.room.visibility)} lobby - ${summary.players.length}/${summary.room.player_count} seats`;
+  }
+
+  if (status === "finished") {
+    return finishedRoomDetail(summary);
+  }
+
+  const turnNumber = summary.room.game_state?.turnNumber;
+
+  if (status === "your-turn") {
+    return turnNumber ? `Turn ${turnNumber} - make your move` : "Make your move";
+  }
+
+  const activeProfileId = summary.room.turn_profile_id;
+  const activePlayer = activeProfileId
+    ? summary.players.find((player) => player.profile_id === activeProfileId)
+    : undefined;
+
+  return activePlayer
+    ? `Waiting on ${activePlayer.profile.display_name}${turnNumber ? ` - turn ${turnNumber}` : ""}`
+    : "Waiting for the next turn";
+}
+
+function finishedRoomDetail(summary: CurrentRoomSummary): string {
+  const winnerId = summary.room.game_state?.winnerId;
+
+  if (!winnerId) {
+    return "Game finished";
+  }
+
+  const seatIndex = Number(/^p([1-4])$/u.exec(winnerId)?.[1] ?? 0) - 1;
+  const winner = summary.players.find((player) => player.seat_index === seatIndex);
+
+  return `${winner?.profile.display_name ?? "A player"} won`;
+}
+
+function FriendRequestList({
+  friends,
+  incoming,
+  outgoing,
+  disabled,
+  onRespond
+}: {
+  friends: FriendSummary[];
+  incoming: FriendSummary[];
+  outgoing: FriendSummary[];
+  disabled: boolean;
+  onRespond: (request: FriendSummary, status: "accepted" | "declined" | "canceled") => Promise<void>;
+}): ReactElement {
+  return (
+    <div className="online-list">
+      {incoming.map((request) => (
+        <article className="online-list-item" key={request.request.id}>
+          <div>
+            <strong>{request.profile.display_name}</strong>
+            <span>Wants to be friends.</span>
+          </div>
+          <button className="primary-button online-small-button" type="button" disabled={disabled} onClick={() => void onRespond(request, "accepted")}>
+            Accept
+          </button>
+          <button className="secondary-button online-small-button" type="button" disabled={disabled} onClick={() => void onRespond(request, "declined")}>
+            Decline
+          </button>
+        </article>
+      ))}
+      {friends.map((friend) => (
+        <article className="online-list-item" key={friend.request.id}>
+          <div>
+            <strong>{friend.profile.display_name}</strong>
+            <span>{friend.profile.friend_code}</span>
+          </div>
+        </article>
+      ))}
+      {outgoing.map((request) => (
+        <article className="online-list-item" key={request.request.id}>
+          <div>
+            <strong>{request.profile.display_name}</strong>
+            <span>Request pending.</span>
+          </div>
+          <button className="secondary-button online-small-button" type="button" disabled={disabled} onClick={() => void onRespond(request, "canceled")}>
+            Cancel
+          </button>
+        </article>
+      ))}
+      {friends.length === 0 && incoming.length === 0 && outgoing.length === 0 ? (
+        <p className="online-empty">Share your friend code or add someone else's.</p>
+      ) : null}
+    </div>
+  );
+}
+
+function OnlineRoomSession({
+  roomId,
+  profile,
+  friends,
+  onExit
+}: {
+  roomId: string;
+  profile: DisukoProfileRow;
+  friends: FriendSummary[];
+  onExit: () => void;
+}): ReactElement {
+  const [bundle, setBundle] = useState<RoomBundle | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [showMenu, setShowMenu] = useState(false);
+  const autoStartAttemptKey = useRef<string | null>(null);
+
+  const refreshRoom = async () => {
+    const nextBundle = await loadRoomBundle(roomId);
+    setBundle(nextBundle);
+  };
+
+  useEffect(() => {
+    let canceled = false;
+
+    const load = async () => {
+      try {
+        const nextBundle = await loadRoomBundle(roomId);
+
+        if (!canceled) {
+          setBundle(nextBundle);
+        }
+      } catch (caughtError) {
+        if (!canceled) {
+          setError(formatError(caughtError));
+        }
+      } finally {
+        if (!canceled) {
+          setLoading(false);
+        }
+      }
+    };
+
+    void load();
+
+    return () => {
+      canceled = true;
+    };
+  }, [roomId]);
+
+  useEffect(() => {
+    return subscribeToRoom(roomId, () => {
+      void refreshRoom();
+    });
+  }, [roomId]);
+
+  const handleLeave = async () => {
+    setSaving(true);
+    setError(null);
+
+    try {
+      await leaveRoom(profile.id, roomId);
+      onExit();
+    } catch (caughtError) {
+      setError(formatError(caughtError));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const handleInvite = async (friendProfileId: string) => {
+    setSaving(true);
+    setError(null);
+
+    try {
+      await inviteFriendToRoom(roomId, profile.id, friendProfileId);
+      await refreshRoom();
+    } catch (caughtError) {
+      setError(formatError(caughtError));
+      await refreshRoom();
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const handleOnlineCommit = (nextGame: GameState) => {
+    if (!bundle || saving) {
+      return;
+    }
+
+    if (bundle.room.turn_profile_id && bundle.room.turn_profile_id !== profile.id) {
+      setError("It is not your turn yet.");
+      return;
+    }
+
+    const currentBundle = bundle;
+    const optimisticRoom = optimisticRoomAfterGameCommit(currentBundle.room, currentBundle.players, profile.id, nextGame);
+
+    setSaving(true);
+    setError(null);
+
+    if (optimisticRoom) {
+      setBundle({
+        ...currentBundle,
+        room: optimisticRoom
+      });
+    }
+
+    void commitRoomGameState(currentBundle.room, currentBundle.players, profile.id, nextGame)
+      .then(async (result) => {
+        if (result.ok && result.room) {
+          setBundle((latest) => latest ? { ...latest, room: result.room as RoomBundle["room"] } : latest);
+          return;
+        }
+
+        setError(result.reason === "not-your-turn" ? "It is not your turn yet." : "The room changed. Refreshed the board.");
+        await refreshRoom();
+      })
+      .catch(async (caughtError: unknown) => {
+        setError(formatError(caughtError));
+        await refreshRoom();
+      })
+      .finally(() => setSaving(false));
+  };
+
+  useEffect(() => {
+    if (!bundle || saving || bundle.room.status !== "lobby" || bundle.players.length !== bundle.room.player_count) {
+      return;
+    }
+
+    const attemptKey = `${bundle.room.id}:${bundle.room.state_version}:${bundle.players.length}`;
+
+    if (autoStartAttemptKey.current === attemptKey) {
+      return;
+    }
+
+    let canceled = false;
+
+    autoStartAttemptKey.current = attemptKey;
+    setSaving(true);
+    setError(null);
+
+    void startRoomIfReady(bundle)
+      .then((nextBundle) => {
+        if (!canceled) {
+          setBundle(nextBundle);
+        }
+      })
+      .catch(async (caughtError: unknown) => {
+        if (!canceled) {
+          setError(formatError(caughtError));
+          await refreshRoom();
+        }
+      })
+      .finally(() => {
+        if (!canceled) {
+          setSaving(false);
+        }
+      });
+
+    return () => {
+      canceled = true;
+    };
+  }, [bundle, saving]);
+
+  if (loading || !bundle) {
+    return (
+      <main className="setup-screen online-screen">
+        <section className="setup-panel online-panel">
+          <img className="setup-logo" src={logoUrl} alt="Disuko" />
+          <p className="setup-copy">Loading room...</p>
+          {error ? <p className="setup-warning" role="alert">{error}</p> : null}
+        </section>
+      </main>
+    );
+  }
+
+  if (!bundle.room.game_state || bundle.room.status === "lobby") {
+    const seatedFriendIds = new Set(bundle.players.map((player) => player.profile_id));
+    const pendingInvites = bundle.pendingInvites.filter((invite) => !seatedFriendIds.has(invite.invite.recipient_profile_id));
+    const pendingInviteByRecipientId = new Map(pendingInvites.map((invite) => [invite.invite.recipient_profile_id, invite]));
+    const emptySeatIndexes = Array.from({ length: bundle.room.player_count }, (_, seatIndex) => seatIndex).filter((seatIndex) => {
+      return !bundle.players.some((player) => player.seat_index === seatIndex);
+    });
+    const pendingInviteBySeatIndex = new Map(emptySeatIndexes.map((seatIndex, index) => [seatIndex, pendingInvites[index]]));
+    const friendsNotSeated = friends.filter((friend) => !seatedFriendIds.has(friend.profile.id));
+
+    return (
+      <main className="setup-screen online-screen">
+        <section className="setup-panel online-panel" aria-labelledby="room-title">
+          <img className="setup-logo" src={logoUrl} alt="Disuko" />
+          <h1 id="room-title">Game lobby</h1>
+          <p className="setup-copy">
+            {roomVisibilityLabel(bundle.room.visibility)} game - {bundle.players.length}/{bundle.room.player_count} seats
+          </p>
+          {error ? <p className="setup-warning" role="alert">{error}</p> : null}
+
+          <section className="online-card">
+            <h2>Players</h2>
+            <div className="online-list">
+              {Array.from({ length: bundle.room.player_count }, (_, seatIndex) => {
+                const player = bundle.players.find((candidate) => candidate.seat_index === seatIndex);
+                const pendingInvite = pendingInviteBySeatIndex.get(seatIndex);
+
+                return (
+                  <article className={`online-list-item ${pendingInvite ? "is-pending-invite" : ""}`} key={seatIndex}>
+                    <div>
+                      <strong>{player?.profile.display_name ?? pendingInvite?.recipient.display_name ?? `Seat ${seatIndex + 1}`}</strong>
+                      <span>{player ? playerIdForUiSeat(seatIndex) : pendingInvite ? "Invited" : "Waiting"}</span>
+                    </div>
+                  </article>
+                );
+              })}
+            </div>
+          </section>
+
+          <section className="online-card">
+            <h2>Invite friends</h2>
+            <div className="online-list">
+              {friendsNotSeated.map((friend) => {
+                const pendingInvite = pendingInviteByRecipientId.get(friend.profile.id);
+
+                return (
+                  <article className={`online-list-item ${pendingInvite ? "is-pending-invite" : ""}`} key={friend.profile.id}>
+                    <div>
+                      <strong>{friend.profile.display_name}</strong>
+                      <span>{pendingInvite ? "Invite pending" : friend.profile.friend_code}</span>
+                    </div>
+                    <button
+                      className="secondary-button online-small-button"
+                      type="button"
+                      disabled={saving || Boolean(pendingInvite)}
+                      onClick={() => void handleInvite(friend.profile.id)}
+                    >
+                      {pendingInvite ? "Pending" : "Invite"}
+                    </button>
+                  </article>
+                );
+              })}
+              {friends.length === 0 ? <p className="online-empty">Add friends from the online dashboard to invite them here.</p> : null}
+              {friends.length > 0 && friendsNotSeated.length === 0 ? <p className="online-empty">Every friend is already seated in this room.</p> : null}
+            </div>
+          </section>
+
+          <div className="setup-actions">
+            <button className="secondary-button" type="button" disabled={saving} onClick={() => void handleLeave()}>
+              Leave
+            </button>
+            {bundle.players.length === bundle.room.player_count ? (
+              <span className="online-lobby-status" role="status">{saving ? "Starting..." : "Ready"}</span>
+            ) : null}
+          </div>
+        </section>
+      </main>
+    );
+  }
+
+  const game = bundle.room.game_state;
+  const onlineGame = game.tabletopMode ? { ...game, tabletopMode: false } : game;
+  const onlineSeat = bundle.players.find((player) => player.profile_id === profile.id);
+  const onlinePlayerId = onlineSeat ? playerIdForSeat(onlineSeat.seat_index) : undefined;
+
+  return (
+    <GameScreen
+      game={onlineGame}
+      onCommit={handleOnlineCommit}
+      onOpenMenu={() => setShowMenu(true)}
+      onNewGame={onExit}
+      newGameLabel="Games"
+      onlinePlayerId={onlinePlayerId}
+      showOnlinePlayerNames
+      suppressTurnPrompt
+    >
+      <OnlineGameBanner
+        saving={saving}
+        error={error}
+      />
+      {showMenu ? (
+        <MenuOverlay
+          game={onlineGame}
+          onResume={() => setShowMenu(false)}
+          onNewGame={onExit}
+          newGameLabel="Games"
+        />
+      ) : null}
+    </GameScreen>
+  );
+}
+
+function OnlineGameBanner({
+  saving,
+  error
+}: {
+  saving: boolean;
+  error: string | null;
+}): ReactElement | null {
+  if (!saving && !error) {
+    return null;
+  }
+
+  return (
+    <aside className="online-game-banner" aria-live="polite">
+      {saving ? <span>Syncing...</span> : null}
+      {error ? <em>{error}</em> : null}
+    </aside>
+  );
+}
+
+function roomVisibilityLabel(visibility: RoomVisibility): string {
+  if (visibility === "public") {
+    return "Public";
+  }
+
+  if (visibility === "friends") {
+    return "Friends";
+  }
+
+  return "Private";
+}
+
+function playerIdForUiSeat(seatIndex: number): string {
+  return `Player ${seatIndex + 1}`;
+}
+
+function formatError(error: unknown): string {
+  if (error instanceof Error) {
+    return error.message;
+  }
+
+  if (typeof error === "object" && error && "message" in error && typeof error.message === "string") {
+    return error.message;
+  }
+
+  return "Something went wrong.";
+}
+
+function LocalSetupScreen({
   onStart,
   onCancel
 }: {
@@ -326,7 +1916,7 @@ function SetupScreen({
     <main className="setup-screen">
       <section className="setup-panel" aria-labelledby="setup-title">
         <img className="setup-logo" src={logoUrl} alt="Disuko" />
-        <h1 id="setup-title">Pass-and-play Disuko</h1>
+        <h1 id="setup-title">Local Disuko</h1>
         <p className="setup-copy">
           Race to place your dice on a 6x6 Sudoku board. Duplicates can stay on the table until
           another player challenges them.
@@ -370,7 +1960,7 @@ function SetupScreen({
             </button>
           ) : null}
           <button className="primary-button" type="button" onClick={() => onStart({ playerCount, tabletopMode })}>
-            Start game
+            Start Local Game
           </button>
         </div>
       </section>
@@ -383,12 +1973,20 @@ function GameScreen({
   onCommit,
   onOpenMenu,
   onNewGame,
+  newGameLabel = "New",
+  onlinePlayerId,
+  showOnlinePlayerNames = false,
+  suppressTurnPrompt = false,
   children
 }: {
   game: GameState;
   onCommit: (game: GameState) => void;
   onOpenMenu: () => void;
   onNewGame: () => void;
+  newGameLabel?: string;
+  onlinePlayerId?: string;
+  showOnlinePlayerNames?: boolean;
+  suppressTurnPrompt?: boolean;
   children: ReactNode;
 }): ReactElement {
   const [openRerollValue, setOpenRerollValue] = useState<DiceValue | null>(null);
@@ -438,7 +2036,14 @@ function GameScreen({
   } | null>(null);
   const suppressNextClick = useRef(false);
   const activePlayer = currentPlayer(game);
+  const pinnedTrayPlayer = onlinePlayerId
+    ? game.players.find((player) => player.id === onlinePlayerId) ?? activePlayer
+    : activePlayer;
   const actionCountLabel = `${game.actionCredits} action${game.actionCredits === 1 ? "" : "s"}`;
+  const onlineWaitingTurnLabel = showOnlinePlayerNames && onlinePlayerId && activePlayer.id !== onlinePlayerId
+    ? `${activePlayer.name}'s turn`
+    : null;
+  const canUseTurnControls = !showOnlinePlayerNames || Boolean(onlinePlayerId && activePlayer.id === onlinePlayerId);
   const trayStatusLabel = game.mode === "reroll" ? "Select the dice to re-roll" : actionCountLabel;
   const activePlayerNumber = game.currentPlayerIndex + 1;
   const activePlayerColor = playerColorCssVars[activePlayer.color];
@@ -753,9 +2358,26 @@ function GameScreen({
       setOpenRerollValue(null);
       setHasExplicitRerollSelection(false);
       clearStackLongPress();
-      setTurnPromptOpen(!game.tabletopMode);
+      setTurnPromptOpen(!game.tabletopMode && !suppressTurnPrompt);
     }
-  }, [game.seed, game.turnNumber, game.currentPlayerIndex, game.phase, game.tabletopMode]);
+  }, [game.seed, game.turnNumber, game.currentPlayerIndex, game.phase, game.tabletopMode, suppressTurnPrompt]);
+
+  useEffect(() => {
+    if (suppressTurnPrompt) {
+      setTurnPromptOpen(false);
+    }
+  }, [suppressTurnPrompt]);
+
+  useEffect(() => {
+    if (canUseTurnControls) {
+      return;
+    }
+
+    clearDragState();
+    clearStackLongPress();
+    setOpenRerollValue(null);
+    setHasExplicitRerollSelection(false);
+  }, [canUseTurnControls]);
 
   useEffect(() => {
     if (game.mode !== "reroll") {
@@ -799,6 +2421,7 @@ function GameScreen({
       setWinnerCelebration({
         playerId: winner.id,
         playerNumber: playerIndex + 1,
+        playerName: winner.name,
         color: playerColorCssVars[winner.color],
         playerSlot,
         trayX: trayRect ? trayRect.left + trayRect.width / 2 : fallbackX,
@@ -947,6 +2570,10 @@ function GameScreen({
   };
 
   const handleTrayGroup = (group: DiceValueGroup) => {
+    if (!canUseTurnControls) {
+      return;
+    }
+
     if (suppressNextClick.current) {
       suppressNextClick.current = false;
       return;
@@ -962,7 +2589,7 @@ function GameScreen({
   };
 
   const handleRerollStackPointerDown = (event: ReactPointerEvent<HTMLElement>, group: DiceValueGroup) => {
-    if (game.mode !== "reroll" || game.phase === "won") {
+    if (!canUseTurnControls || game.mode !== "reroll" || game.phase === "won") {
       return;
     }
 
@@ -1038,6 +2665,10 @@ function GameScreen({
   };
 
   const handleBoardDie = (die: Die) => {
+    if (!canUseTurnControls) {
+      return;
+    }
+
     if (suppressNextClick.current) {
       suppressNextClick.current = false;
       return;
@@ -1105,6 +2736,10 @@ function GameScreen({
   };
 
   const handleCell = (row: number, col: number) => {
+    if (!canUseTurnControls) {
+      return;
+    }
+
     const cellDie = getDieAt(game, row, col);
 
     if (cellDie) {
@@ -1127,7 +2762,7 @@ function GameScreen({
   };
 
   const handleDiePointerDown = (event: ReactPointerEvent<HTMLElement>, die: Die) => {
-    if (game.phase === "won") {
+    if (!canUseTurnControls || game.phase === "won") {
       return;
     }
 
@@ -1242,6 +2877,10 @@ function GameScreen({
   };
 
   const handleReroll = () => {
+    if (!canUseTurnControls) {
+      return;
+    }
+
     if (game.mode !== "reroll") {
       setOpenRerollValue(null);
       setHasExplicitRerollSelection(false);
@@ -1263,6 +2902,10 @@ function GameScreen({
   };
 
   const handleCancelReroll = () => {
+    if (!canUseTurnControls) {
+      return;
+    }
+
     setOpenRerollValue(null);
     setHasExplicitRerollSelection(false);
     clearStackLongPress();
@@ -1280,6 +2923,7 @@ function GameScreen({
       conflictBlockerHighlight={conflictBlockerHighlight}
       tabletopMode={game.tabletopMode}
       activePlayerColor={activePlayerColor}
+      canInteract={canUseTurnControls && game.phase !== "won"}
       onCell={handleCell}
       onDie={handleBoardDie}
       onDiePointerDown={handleDiePointerDown}
@@ -1291,26 +2935,42 @@ function GameScreen({
 
   const renderPlayerTray = (player: Player) => {
     const isActive = player.id === activePlayer.id;
+    const isPinnedOnlineTray = Boolean(showOnlinePlayerNames && onlinePlayerId && player.id === onlinePlayerId);
     const trayMode = isActive ? game.mode : "place";
     const trayGroups = isActive ? currentTrayGroups : groupDiceByValue(offBoardDice(game, player.id));
-    const disabled = !isActive || game.phase === "won";
-    const rerollReady = isActive && game.mode === "reroll" && game.selectedDieIds.length > 0;
+    const disabled = !canUseTurnControls || !isActive || game.phase === "won";
+    const rerollReady = canUseTurnControls && isActive && game.mode === "reroll" && game.selectedDieIds.length > 0;
+    const playerActionCountLabel = isActive
+      ? canUseTurnControls
+        ? trayStatusLabel
+        : onlineWaitingTurnLabel ?? `${activePlayer.name}'s turn`
+      : isPinnedOnlineTray && onlineWaitingTurnLabel
+        ? onlineWaitingTurnLabel
+        : "0 actions";
+    const trayClassName = [
+      isActive ? "is-active-player" : "",
+      showOnlinePlayerNames ? "is-online-tray" : ""
+    ]
+      .filter(Boolean)
+      .join(" ");
 
     return (
       <DiceTray
         groups={trayGroups}
-        selectedIds={isActive ? selectedDieIdSet : new Set<string>()}
+        selectedIds={isActive && canUseTurnControls ? selectedDieIdSet : new Set<string>()}
         player={player}
         mode={trayMode}
         draggingDieId={transientDieId}
         openRerollValue={isActive ? openRerollValue : null}
-        actionCountLabel={isActive ? trayStatusLabel : "0 actions"}
+        actionCountLabel={playerActionCountLabel}
         rollLabel={rerollReady ? "ready" : "re-roll"}
         rollColor={rerollReady ? "green" : "blue"}
         rollActive={rerollReady}
         disabled={disabled}
         hidePlayerName={game.tabletopMode}
-        className={isActive ? "is-active-player" : undefined}
+        showPlayerName={showOnlinePlayerNames}
+        className={trayClassName}
+        style={{ "--tray-player-color": playerColorCssVars[player.color] } as CSSProperties}
         onGroup={handleTrayGroup}
         onRoll={handleReroll}
         onCancelReroll={handleCancelReroll}
@@ -1338,7 +2998,7 @@ function GameScreen({
       {game.tabletopMode ? (
         <header className="tabletop-tools" aria-label="Game controls">
           <button className="new-game-chip" type="button" onClick={handleNewGame}>
-            New
+            {newGameLabel}
           </button>
         </header>
       ) : (
@@ -1351,17 +3011,23 @@ function GameScreen({
             </button>
             <img className="game-logo" src={logoUrl} alt="Disuko" />
             <button className="new-game-chip" type="button" onClick={handleNewGame}>
-              New
+              {newGameLabel}
             </button>
           </header>
 
-          <OpponentTrayStrip game={game} activePlayer={activePlayer} hiddenDieId={transientDieId} />
+          <OpponentTrayStrip
+            game={game}
+            pinnedPlayer={pinnedTrayPlayer}
+            activePlayer={activePlayer}
+            hiddenDieId={transientDieId}
+            showPlayerNames={showOnlinePlayerNames}
+          />
 
           {board}
 
           <div className="side-stack">
             <section className="control-dock" aria-label="Game controls">
-              {renderPlayerTray(activePlayer)}
+              {renderPlayerTray(pinnedTrayPlayer)}
             </section>
           </div>
         </>
@@ -1396,7 +3062,7 @@ function GameScreen({
         </>
       ) : null}
 
-      {turnPromptOpen && game.phase === "playing" && !game.tabletopMode ? (
+      {turnPromptOpen && game.phase === "playing" && !game.tabletopMode && !suppressTurnPrompt ? (
         <TurnStartPrompt player={activePlayer} playerNumber={activePlayerNumber} onPlay={() => setTurnPromptOpen(false)} />
       ) : null}
 
@@ -1481,7 +3147,7 @@ function WinnerCelebration({
         role="dialog"
         aria-labelledby="winner-title"
       >
-        <strong id="winner-title">Player {layout.playerNumber} won!</strong>
+        <strong id="winner-title">{layout.playerName || `Player ${layout.playerNumber}`} won!</strong>
         <button type="button" onClick={onNewGame}>
           New game
         </button>
@@ -1696,23 +3362,33 @@ function TurnStartPrompt({
 
 function OpponentTrayStrip({
   game,
+  pinnedPlayer,
   activePlayer,
-  hiddenDieId
+  hiddenDieId,
+  showPlayerNames = false
 }: {
   game: GameState;
+  pinnedPlayer: Player;
   activePlayer: Player;
   hiddenDieId: string | null;
+  showPlayerNames?: boolean;
 }): ReactElement {
-  const opponents = game.players.filter((player) => player.id !== activePlayer.id);
+  const opponents = game.players.filter((player) => player.id !== pinnedPlayer.id);
 
   return (
     <section className="opponent-tray-zone" aria-label="Other players">
       {opponents.map((player) => {
         const playerIndex = game.players.findIndex((candidate) => candidate.id === player.id) + 1;
+        const rowClassName = [
+          `opponent-tray-row opponent-${player.color}`,
+          player.id === activePlayer.id ? "is-active-player" : ""
+        ]
+          .filter(Boolean)
+          .join(" ");
 
         return (
-          <article className={`opponent-tray-row opponent-${player.color}`} key={player.id}>
-            <strong>Player {playerIndex}</strong>
+          <article className={rowClassName} key={player.id}>
+            <strong>{showPlayerNames ? player.name : `Player ${playerIndex}`}</strong>
             <DiceRail
               groups={groupDiceByValue(offBoardDice(game, player.id))}
               draggingDieId={hiddenDieId}
@@ -1737,6 +3413,7 @@ function Board({
   conflictBlockerHighlight,
   tabletopMode = false,
   activePlayerColor,
+  canInteract,
   onCell,
   onDie,
   onDiePointerDown,
@@ -1753,6 +3430,7 @@ function Board({
   conflictBlockerHighlight: ConflictBlockerHighlight | null;
   tabletopMode?: boolean;
   activePlayerColor?: string;
+  canInteract: boolean;
   onCell: (row: number, col: number) => void;
   onDie: (die: Die) => void;
   onDiePointerDown: (event: ReactPointerEvent<HTMLElement>, die: Die) => void;
@@ -1772,7 +3450,7 @@ function Board({
 
   return (
     <section
-      className={`board-wrap ${tabletopMode ? "is-tabletop-board" : ""}`}
+      className={`board-wrap ${tabletopMode ? "is-tabletop-board" : ""} ${canInteract ? "" : "is-readonly"}`}
       style={tabletopMode ? ({ "--active-player-color": activePlayerColor } as CSSProperties) : undefined}
       aria-label="Disuko board"
     >
@@ -1802,7 +3480,8 @@ function Board({
               key={key}
               role="gridcell"
               type="button"
-              onClick={() => onCell(row, col)}
+              disabled={!canInteract}
+              onClick={canInteract ? () => onCell(row, col) : undefined}
             >
               {die ? (
                 <DieFace
@@ -1812,11 +3491,11 @@ function Board({
                   recentMoveColor={recentMoveColor}
                   moveLocked={moveLocked}
                   draggingSource={draggingDieId === die.id}
-                  onClick={() => onDie(die)}
-                  onPointerDown={(event) => onDiePointerDown(event, die)}
-                  onPointerMove={onDiePointerMove}
-                  onPointerUp={onDiePointerUp}
-                  onPointerCancel={onDiePointerCancel}
+                  onClick={canInteract ? () => onDie(die) : undefined}
+                  onPointerDown={canInteract ? (event) => onDiePointerDown(event, die) : undefined}
+                  onPointerMove={canInteract ? onDiePointerMove : undefined}
+                  onPointerUp={canInteract ? onDiePointerUp : undefined}
+                  onPointerCancel={canInteract ? onDiePointerCancel : undefined}
                 />
               ) : null}
             </button>
@@ -1890,7 +3569,9 @@ function DiceTray({
   rollActive,
   disabled = false,
   hidePlayerName = false,
+  showPlayerName = false,
   className,
+  style,
   onGroup,
   onRoll,
   onCancelReroll,
@@ -1916,7 +3597,9 @@ function DiceTray({
   rollActive: boolean;
   disabled?: boolean;
   hidePlayerName?: boolean;
+  showPlayerName?: boolean;
   className?: string;
+  style?: CSSProperties;
   onGroup: (group: DiceValueGroup) => void;
   onRoll: () => void;
   onCancelReroll: () => void;
@@ -1934,11 +3617,18 @@ function DiceTray({
     <section
       className={`dice-tray ${disabled ? "is-disabled" : ""} ${className ?? ""}`}
       data-player-id={player.id}
+      style={style}
       aria-label={hidePlayerName ? `${player.color} dice tray` : `${player.name}'s dice tray`}
     >
       <div className="tray-control-row">
         <div className="tray-dice-column">
-          <div className={`tray-status-row ${mode === "reroll" ? "is-reroll-message" : ""}`} aria-live="polite">
+          <div
+            className={`tray-status-row ${mode === "reroll" ? "is-reroll-message" : ""} ${
+              showPlayerName ? "has-player-name" : ""
+            }`}
+            aria-live="polite"
+          >
+            {showPlayerName ? <span className="tray-player-name">{player.name}</span> : null}
             <span className="tray-action-counter">{actionCountLabel}</span>
           </div>
           <DiceRail
@@ -2201,11 +3891,13 @@ function StackRerollPicker({
 function MenuOverlay({
   game,
   onResume,
-  onNewGame
+  onNewGame,
+  newGameLabel = "New game"
 }: {
   game: GameState;
   onResume: () => void;
   onNewGame: () => void;
+  newGameLabel?: string;
 }): ReactElement {
   return (
     <div className="menu-backdrop" role="dialog" aria-modal="true" aria-labelledby="menu-title">
@@ -2226,7 +3918,7 @@ function MenuOverlay({
         </div>
         <div className="setup-actions">
           <button className="secondary-button" type="button" onClick={onNewGame}>
-            New game
+            {newGameLabel}
           </button>
           <button className="primary-button" type="button" onClick={onResume}>
             Resume

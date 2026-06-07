@@ -3,3 +3,10 @@ dist/
 .playwright-cli/
 .vite/
 *.tsbuildinfo
+.env
+.env.local
+.env.*.local
+!.env.example
+supabase/.temp/
+.codex-remote-attachments/
+.codex-vite*.log

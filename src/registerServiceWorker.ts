@@ -1,7 +1,24 @@
 export function registerServiceWorker(): void {
-  const localInstallHost = ["localhost", "127.0.0.1", "::1"].includes(window.location.hostname);
+  const localDevHost = ["localhost", "127.0.0.1", "::1"].includes(window.location.hostname);
 
-  if (!("serviceWorker" in navigator) || (!import.meta.env.PROD && !localInstallHost)) {
+  if (!("serviceWorker" in navigator)) {
+    return;
+  }
+
+  if (!import.meta.env.PROD && localDevHost) {
+    window.addEventListener("load", () => {
+      navigator.serviceWorker.getRegistrations()
+        .then((registrations) => Promise.all(registrations.map((registration) => registration.unregister())))
+        .then(() => caches.keys())
+        .then((cacheNames) => Promise.all(cacheNames.map((cacheName) => caches.delete(cacheName))))
+        .catch(() => {
+          // Local dev still works if cleanup fails.
+        });
+    });
+    return;
+  }
+
+  if (!import.meta.env.PROD) {
     return;
   }
 
