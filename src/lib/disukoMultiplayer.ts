@@ -1,9 +1,10 @@
 import { newGame } from "../game/engine";
-import type { GameState, NewGameOptions } from "../game/types";
+import type { BotDifficulty, GameState, NewGameOptions, PlayerController } from "../game/types";
 import {
   getSupabaseClient,
   type DisukoFriendRequestRow,
   type DisukoProfileRow,
+  type DisukoRoomBotRow,
   type DisukoRoomInviteRow,
   type DisukoRoomPlayerRow,
   type DisukoRoomRow,
@@ -28,6 +29,8 @@ export interface RoomPlayer extends DisukoRoomPlayerRow {
   profile: DisukoProfileRow;
 }
 
+export type RoomBot = DisukoRoomBotRow;
+
 export interface RoomPendingInvite {
   invite: DisukoRoomInviteRow;
   sender: DisukoProfileRow | null;
@@ -37,6 +40,7 @@ export interface RoomPendingInvite {
 export interface RoomBundle {
   room: DisukoRoomWithGameState;
   players: RoomPlayer[];
+  bots: RoomBot[];
   pendingInvites: RoomPendingInvite[];
 }
 
@@ -49,6 +53,7 @@ export interface PublicRoomSummary {
 export interface CurrentRoomSummary {
   room: DisukoRoomWithGameState;
   players: RoomPlayer[];
+  bots: RoomBot[];
   seat: RoomPlayer;
 }
 
@@ -58,7 +63,13 @@ export interface RoomInviteSummary {
   sender: DisukoProfileRow | null;
 }
 
-export type CurrentRoomStatus = "your-turn" | "waiting" | "lobby" | "finished";
+export type CurrentRoomStatus = "your-turn" | "bot-turn" | "waiting" | "lobby" | "finished";
+
+export interface RoomBotSeatInput {
+  seatIndex: number;
+  difficulty: BotDifficulty;
+  name?: string;
+}
 
 export interface GameCommitResult {
   ok: boolean;
@@ -68,6 +79,7 @@ export interface GameCommitResult {
 
 const FRIEND_CODE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
 const ROOM_CODE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+const BOT_DIFFICULTIES = new Set<BotDifficulty>(["easy", "medium", "hard"]);
 let anonymousUserPromise: Promise<string> | null = null;
 let realtimeSubscriptionSequence = 0;
 
@@ -88,7 +100,12 @@ export function seatIndexForPlayerId(playerId: string): number | null {
   return match ? Number(match[1]) - 1 : null;
 }
 
-export function profileIdForGamePlayer(players: RoomPlayer[], playerId: string | undefined): string | null {
+export function profileIdForGamePlayer(
+  players: RoomPlayer[],
+  playerId: string | undefined,
+  bots: RoomBot[] = [],
+  hostProfileId?: string
+): string | null {
   if (!playerId) {
     return null;
   }
@@ -99,26 +116,115 @@ export function profileIdForGamePlayer(players: RoomPlayer[], playerId: string |
     return null;
   }
 
-  return players.find((player) => player.seat_index === seatIndex)?.profile_id ?? null;
+  const playerProfileId = players.find((player) => player.seat_index === seatIndex)?.profile_id;
+
+  if (playerProfileId) {
+    return playerProfileId;
+  }
+
+  const bot = bots.find((candidate) => candidate.seat_index === seatIndex);
+  return bot ? hostProfileId ?? bot.created_by_profile_id : null;
 }
 
-export function turnProfileIdForGame(players: RoomPlayer[], game: GameState): string | null {
-  return players.find((player) => player.seat_index === game.currentPlayerIndex)?.profile_id ?? null;
+export function turnProfileIdForGame(
+  players: RoomPlayer[],
+  game: GameState,
+  bots: RoomBot[] = [],
+  hostProfileId?: string
+): string | null {
+  const playerProfileId = players.find((player) => player.seat_index === game.currentPlayerIndex)?.profile_id;
+
+  if (playerProfileId) {
+    return playerProfileId;
+  }
+
+  const bot = activeRoomBot(bots, game);
+  return bot ? hostProfileId ?? bot.created_by_profile_id : null;
 }
 
-export function playerNamesForRoom(players: RoomPlayer[], playerCount: NewGameOptions["playerCount"]): string[] {
+export function activeRoomBot(bots: RoomBot[], game: GameState | null): RoomBot | null {
+  if (!game) {
+    return null;
+  }
+
+  return bots.find((bot) => bot.seat_index === game.currentPlayerIndex) ?? null;
+}
+
+export function roomSeatCount(players: RoomPlayer[], bots: RoomBot[]): number {
+  return players.length + bots.length;
+}
+
+export function occupiedRoomSeatIndexes(players: RoomPlayer[], bots: RoomBot[]): Set<number> {
+  return new Set([...players.map((player) => player.seat_index), ...bots.map((bot) => bot.seat_index)]);
+}
+
+
+function normalizeRoomBotSeats(
+  botSeats: RoomBotSeatInput[],
+  playerCount: 2 | 3 | 4
+): Array<{ seatIndex: number; difficulty: BotDifficulty; name: string }> {
+  const seats = new Map<number, { seatIndex: number; difficulty: BotDifficulty; name: string }>();
+
+  botSeats.forEach((botSeat) => {
+    if (!Number.isInteger(botSeat.seatIndex) || botSeat.seatIndex <= 0 || botSeat.seatIndex >= playerCount) {
+      throw new Error("Bot seats must be open player slots in this room.");
+    }
+
+    if (!BOT_DIFFICULTIES.has(botSeat.difficulty)) {
+      throw new Error("Choose an easy, medium, or hard bot.");
+    }
+
+    if (seats.has(botSeat.seatIndex)) {
+      throw new Error("Each room seat can only be filled once.");
+    }
+
+    const defaultName = `${botSeat.difficulty[0].toUpperCase()}${botSeat.difficulty.slice(1)} Bot`;
+    seats.set(botSeat.seatIndex, {
+      seatIndex: botSeat.seatIndex,
+      difficulty: botSeat.difficulty,
+      name: botSeat.name?.trim().slice(0, 32) || defaultName
+    });
+  });
+
+  return [...seats.values()].sort((left, right) => left.seatIndex - right.seatIndex);
+}
+export function playerNamesForRoom(
+  players: RoomPlayer[],
+  playerCount: NewGameOptions["playerCount"],
+  bots: RoomBot[] = []
+): string[] {
   return Array.from({ length: playerCount }, (_, index) => {
-    return players.find((player) => player.seat_index === index)?.profile.display_name ?? `Player ${index + 1}`;
+    return players.find((player) => player.seat_index === index)?.profile.display_name
+      ?? bots.find((bot) => bot.seat_index === index)?.display_name
+      ?? `Player ${index + 1}`;
   });
 }
 
-export function currentRoomStatus(room: DisukoRoomWithGameState, profileId: string): CurrentRoomStatus {
+export function playerControllersForRoom(
+  bots: RoomBot[],
+  playerCount: NewGameOptions["playerCount"]
+): PlayerController[] {
+  return Array.from({ length: playerCount }, (_, seatIndex) => {
+    const bot = bots.find((candidate) => candidate.seat_index === seatIndex);
+    return bot ? { kind: "bot", difficulty: bot.difficulty } : { kind: "human" };
+  });
+}
+
+export function currentRoomStatus(
+  room: DisukoRoomWithGameState,
+  profileId: string,
+  bots: RoomBot[] = []
+): CurrentRoomStatus {
   if (room.status === "finished") {
     return "finished";
   }
 
   if (room.status === "lobby" || !room.turn_profile_id) {
     return "lobby";
+  }
+
+  if (activeRoomBot(bots, room.game_state)) {
+    return "bot-turn";
   }
 
   return room.turn_profile_id === profileId ? "your-turn" : "waiting";
@@ -128,11 +234,12 @@ export function optimisticRoomAfterGameCommit(
   room: DisukoRoomWithGameState,
   players: RoomPlayer[],
   profileId: string,
-  nextGame: GameState
+  nextGame: GameState,
+  bots: RoomBot[] = []
 ): DisukoRoomWithGameState | null {
   const nextTurnProfileId = nextGame.phase === "won"
-    ? profileIdForGamePlayer(players, nextGame.winnerId) ?? profileId
-    : turnProfileIdForGame(players, nextGame);
+    ? profileIdForGamePlayer(players, nextGame.winnerId, bots, room.host_profile_id) ?? profileId
+    : turnProfileIdForGame(players, nextGame, bots, room.host_profile_id);
 
   if (!nextTurnProfileId) {
     return null;
@@ -346,9 +453,10 @@ export async function respondToFriendRequest(requestId: string, status: "accepte
 
 export async function createRoom(
   profileId: string,
-  options: { playerCount: 2 | 3 | 4; visibility: RoomVisibility }
+  options: { playerCount: 2 | 3 | 4; visibility: RoomVisibility; botSeats?: RoomBotSeatInput[] }
 ): Promise<RoomBundle> {
   const supabase = getSupabaseClient();
+  const botSeats = normalizeRoomBotSeats(options.botSeats ?? [], options.playerCount);
 
   for (let attempt = 0; attempt < 5; attempt += 1) {
     const { data: room, error: roomError } = await supabase
@@ -356,7 +464,7 @@ export async function createRoom(
       .insert({
         room_code: generateRoomCode(),
         host_profile_id: profileId,
-        visibility: options.visibility,
+        visibility: "private",
         player_count: options.playerCount,
         tabletop_mode: false
       })
@@ -383,6 +491,33 @@ export async function createRoom(
       throw playerError;
     }
 
+    if (botSeats.length > 0) {
+      const { error: botError } = await supabase.from("disuko_room_bots").insert(
+        botSeats.map((botSeat) => ({
+          room_id: room.id,
+          seat_index: botSeat.seatIndex,
+          difficulty: botSeat.difficulty,
+          display_name: botSeat.name,
+          created_by_profile_id: profileId
+        }))
+      );
+
+      if (botError) {
+        await supabase.from("disuko_rooms").delete().eq("id", room.id);
+        throw botError;
+      }
+    }
+
+    const { error: visibilityError } = await supabase
+      .from("disuko_rooms")
+      .update({ visibility: options.visibility })
+      .eq("id", room.id);
+
+    if (visibilityError) {
+      await supabase.from("disuko_rooms").delete().eq("id", room.id);
+      throw visibilityError;
+    }
+
     return loadRoomBundle(room.id);
   }
 
@@ -405,12 +540,12 @@ export async function loadPublicRooms(): Promise<PublicRoomSummary[]> {
 
   const roomIds = (rooms ?? []).map((room) => room.id);
   const hostIds = [...new Set((rooms ?? []).map((room) => room.host_profile_id))];
-  const [playersByRoom, profiles] = await Promise.all([loadRoomPlayerCounts(roomIds), loadProfilesByIds(hostIds)]);
+  const [seatsByRoom, profiles] = await Promise.all([loadRoomSeatCounts(roomIds), loadProfilesByIds(hostIds)]);
 
   return (rooms ?? []).map((room) => ({
     room: castRoom(rowToRoom(room)),
     host: profiles.get(room.host_profile_id) ?? null,
-    joinedSeats: playersByRoom.get(room.id) ?? 0
+    joinedSeats: seatsByRoom.get(room.id) ?? 0
   }));
 }
 
@@ -435,6 +570,7 @@ export async function loadCurrentRooms(profileId: string): Promise<CurrentRoomSu
         ? {
             room: bundle.room,
             players: bundle.players,
+            bots: bundle.bots,
             seat: hydratedSeat
           }
         : null;
@@ -476,7 +612,7 @@ export async function joinRoom(profileId: string, roomId: string): Promise<RoomB
     throw new Error("That game has already started.");
   }
 
-  const occupiedSeats = new Set(bundle.players.map((player) => player.seat_index));
+  const occupiedSeats = occupiedRoomSeatIndexes(bundle.players, bundle.bots);
   const seatIndex = Array.from({ length: bundle.room.player_count }, (_, index) => index).find(
     (index) => !occupiedSeats.has(index)
   );
@@ -501,7 +637,7 @@ export async function joinRoom(profileId: string, roomId: string): Promise<RoomB
         return startRoomIfReady(latestBundle);
       }
 
-      const latestOccupiedSeats = new Set(latestBundle.players.map((player) => player.seat_index));
+      const latestOccupiedSeats = occupiedRoomSeatIndexes(latestBundle.players, latestBundle.bots);
       const nextSeatIndex = Array.from({ length: latestBundle.room.player_count }, (_, index) => index).find(
         (index) => !latestOccupiedSeats.has(index)
       );
@@ -636,25 +772,33 @@ export async function loadRoomBundle(roomId: string): Promise<RoomBundle> {
     throw roomError;
   }
 
-  const { data: roomPlayers, error: playersError } = await supabase
-    .from("disuko_room_players")
-    .select("*")
-    .eq("room_id", roomId)
-    .order("seat_index", { ascending: true });
+  const [
+    { data: roomPlayers, error: playersError },
+    { data: roomBots, error: botsError },
+    { data: roomInvites, error: invitesError }
+  ] = await Promise.all([
+    supabase
+      .from("disuko_room_players")
+      .select("*")
+      .eq("room_id", roomId)
+      .order("seat_index", { ascending: true }),
+    supabase
+      .from("disuko_room_bots")
+      .select("*")
+      .eq("room_id", roomId)
+      .order("seat_index", { ascending: true }),
+    supabase
+      .from("disuko_room_invites")
+      .select("*")
+      .eq("room_id", roomId)
+      .eq("status", "pending")
+      .order("created_at", { ascending: true })
+  ]);
 
-  if (playersError) {
-    throw playersError;
-  }
+  const bundleError = playersError ?? botsError ?? invitesError;
 
-  const { data: roomInvites, error: invitesError } = await supabase
-    .from("disuko_room_invites")
-    .select("*")
-    .eq("room_id", roomId)
-    .eq("status", "pending")
-    .order("created_at", { ascending: true });
-
-  if (invitesError) {
-    throw invitesError;
+  if (bundleError) {
+    throw bundleError;
   }
 
   const profileIds = [
@@ -685,6 +829,7 @@ export async function loadRoomBundle(roomId: string): Promise<RoomBundle> {
   return {
     room: castRoom(rowToRoom(room)),
     players,
+    bots: roomBots ?? [],
     pendingInvites
   };
 }
@@ -694,7 +839,7 @@ export async function startRoomGame(bundle: RoomBundle): Promise<RoomBundle> {
     return bundle;
   }
 
-  if (bundle.players.length !== bundle.room.player_count) {
+  if (roomSeatCount(bundle.players, bundle.bots) !== bundle.room.player_count) {
     throw new Error("The room needs every seat filled before starting.");
   }
 
@@ -703,9 +848,10 @@ export async function startRoomGame(bundle: RoomBundle): Promise<RoomBundle> {
     playerCount,
     seed: bundle.room.room_code,
     tabletopMode: false,
-    playerNames: playerNamesForRoom(bundle.players, playerCount)
+    playerNames: playerNamesForRoom(bundle.players, playerCount, bundle.bots),
+    playerControllers: playerControllersForRoom(bundle.bots, playerCount)
   });
-  const firstTurnProfileId = turnProfileIdForGame(bundle.players, game);
+  const firstTurnProfileId = turnProfileIdForGame(bundle.players, game, bundle.bots, bundle.room.host_profile_id);
   const supabase = getSupabaseClient();
   const { data, error } = await supabase
     .from("disuko_rooms")
@@ -734,7 +880,7 @@ export async function startRoomGame(bundle: RoomBundle): Promise<RoomBundle> {
 }
 
 export async function startRoomIfReady(bundle: RoomBundle): Promise<RoomBundle> {
-  if (bundle.room.status !== "lobby" || bundle.players.length !== bundle.room.player_count) {
+  if (bundle.room.status !== "lobby" || roomSeatCount(bundle.players, bundle.bots) !== bundle.room.player_count) {
     return bundle;
   }
 
@@ -753,7 +899,8 @@ export async function commitRoomGameState(
   room: DisukoRoomWithGameState,
   players: RoomPlayer[],
   profileId: string,
-  nextGame: GameState
+  nextGame: GameState,
+  bots: RoomBot[] = []
 ): Promise<GameCommitResult> {
   if (!room.game_state) {
     return { ok: false, reason: "missing-seat" };
@@ -763,7 +910,7 @@ export async function commitRoomGameState(
     return { ok: false, reason: "not-your-turn" };
   }
 
-  const optimisticRoom = optimisticRoomAfterGameCommit(room, players, profileId, nextGame);
+  const optimisticRoom = optimisticRoomAfterGameCommit(room, players, profileId, nextGame, bots);
 
   if (!optimisticRoom) {
     return { ok: false, reason: "missing-seat" };
@@ -807,8 +954,13 @@ export function subscribeToRoom(roomId: string, onChange: () => void): () => voi
     .channel(nextRealtimeChannelName(`disuko-room:${roomId}`))
     .on("postgres_changes", roomChange("disuko_rooms", `id=eq.${roomId}`), onChange)
     .on("postgres_changes", roomChange("disuko_room_players", `room_id=eq.${roomId}`), onChange)
+    .on("postgres_changes", roomChange("disuko_room_bots", `room_id=eq.${roomId}`), onChange)
     .on("postgres_changes", roomChange("disuko_room_invites", `room_id=eq.${roomId}`), onChange)
-    .subscribe();
+    .subscribe((status) => {
+      if (status === "SUBSCRIBED") {
+        onChange();
+      }
+    });
 
   return () => {
     void supabase.removeChannel(channel);
@@ -887,11 +1039,12 @@ function castRoom(room: DisukoRoomWithGameState): DisukoRoomWithGameState {
 function compareCurrentRooms(left: CurrentRoomSummary, right: CurrentRoomSummary, profileId: string): number {
   const priority: Record<CurrentRoomStatus, number> = {
     "your-turn": 0,
-    lobby: 1,
-    waiting: 2,
-    finished: 3
+    "bot-turn": 1,
+    lobby: 2,
+    waiting: 3,
+    finished: 4
   };
-  const statusDifference = priority[currentRoomStatus(left.room, profileId)] - priority[currentRoomStatus(right.room, profileId)];
+  const statusDifference = priority[currentRoomStatus(left.room, profileId, left.bots)] - priority[currentRoomStatus(right.room, profileId, right.bots)];
 
   if (statusDifference !== 0) {
     return statusDifference;
@@ -917,21 +1070,24 @@ async function loadProfilesByIds(profileIds: string[]): Promise<Map<string, Disu
   return new Map((data ?? []).map((profile) => [profile.id, profile]));
 }
 
-async function loadRoomPlayerCounts(roomIds: string[]): Promise<Map<string, number>> {
+async function loadRoomSeatCounts(roomIds: string[]): Promise<Map<string, number>> {
   if (roomIds.length === 0) {
     return new Map();
   }
 
   const supabase = getSupabaseClient();
-  const { data, error } = await supabase.from("disuko_room_players").select("room_id").in("room_id", roomIds);
+  const [{ data: playerRows, error: playerError }, { data: botRows, error: botError }] = await Promise.all([
+    supabase.from("disuko_room_players").select("room_id").in("room_id", roomIds),
+    supabase.from("disuko_room_bots").select("room_id").in("room_id", roomIds)
+  ]);
 
-  if (error) {
-    throw error;
+  if (playerError || botError) {
+    throw playerError ?? botError;
   }
 
   const counts = new Map<string, number>();
 
-  (data ?? []).forEach((row) => {
+  [...(playerRows ?? []), ...(botRows ?? [])].forEach((row) => {
     counts.set(row.room_id, (counts.get(row.room_id) ?? 0) + 1);
   });
 
@@ -956,7 +1112,7 @@ async function loadRoomsByIds(roomIds: string[]): Promise<Map<string, DisukoRoom
 }
 
 function roomChange(
-  table: "disuko_rooms" | "disuko_room_players" | "disuko_room_invites" | "disuko_friend_requests",
+  table: "disuko_rooms" | "disuko_room_players" | "disuko_room_bots" | "disuko_room_invites" | "disuko_friend_requests",
   filter: string
 ) {
   return {

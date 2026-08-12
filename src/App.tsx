@@ -10,6 +10,7 @@ import {
   type ReactElement,
   type ReactNode
 } from "react";
+import { runBotTurn } from "./game/bot";
 import { createPortal } from "react-dom";
 import { boxIndex, cellsForBox } from "./game/geometry";
 import {
@@ -35,8 +36,20 @@ import {
   wouldPlaceDieConflict
 } from "./game/engine";
 import { groupDiceByValue, type DiceValueGroup } from "./game/diceOrdering";
-import { BOARD_SIZE, DICE_VALUES, type ActionMode, type DiceValue, type Die, type GameState, type Player, type PlayerColor } from "./game/types";
 import {
+  BOARD_SIZE,
+  DICE_VALUES,
+  type ActionMode,
+  type BotDifficulty,
+  type DiceValue,
+  type Die,
+  type GameState,
+  type Player,
+  type PlayerColor,
+  type PlayerController
+} from "./game/types";
+import {
+  activeRoomBot,
   commitRoomGameState,
   createCurrentProfile,
   createRoom,
@@ -53,6 +66,7 @@ import {
   loadRoomInvites,
   optimisticRoomAfterGameCommit,
   playerIdForSeat,
+  roomSeatCount,
   respondToFriendRequest,
   respondToRoomInvite,
   sendFriendRequest,
@@ -125,9 +139,23 @@ const playerColorCssVars: Record<PlayerColor, string> = {
   green: "var(--green)",
   yellow: "var(--yellow)"
 };
+const BOT_DIFFICULTIES: BotDifficulty[] = ["easy", "medium", "hard"];
+
+function botDisplayName(difficulty: BotDifficulty, seatIndex: number): string {
+  const names: Record<BotDifficulty, string> = {
+    easy: "Pip",
+    medium: "Rook",
+    hard: "Oracle"
+  };
+
+  return `${names[difficulty]} - P${seatIndex + 1}`;
+}
+
 
 type SetupStartOptions = {
   playerCount: 2 | 3 | 4;
+  playerNames: string[];
+  playerControllers: PlayerController[];
   tabletopMode: boolean;
 };
 
@@ -139,6 +167,7 @@ type InvalidReturnKind = "move" | "place";
 type CreateGameRequest = {
   playerCount: 2 | 3 | 4;
   invitedProfileIds: string[];
+  botSeats: Array<{ seatIndex: number; difficulty: BotDifficulty; name?: string }>;
   hasOpenSeats: boolean;
 };
 
@@ -266,7 +295,7 @@ export default function App(): ReactElement {
     return publicRooms.filter((summary) => !currentRoomIds.has(summary.room.id));
   }, [currentRooms, publicRooms]);
   const hasOnlineAlert = profile
-    ? roomInvites.length > 0 || currentRooms.some((summary) => currentRoomStatus(summary.room, profile.id) === "your-turn")
+    ? roomInvites.length > 0 || currentRooms.some((summary) => currentRoomStatus(summary.room, profile.id, summary.bots) === "your-turn")
     : false;
 
   useEffect(() => {
@@ -281,7 +310,31 @@ export default function App(): ReactElement {
     }
 
     window.localStorage.setItem(STORAGE_KEY, serializeGame(game));
+
   }, [game]);
+  useEffect(() => {
+    if (view !== "local-game" || !game || game.phase !== "playing") {
+      return;
+    }
+
+    const activePlayer = currentPlayer(game);
+
+    if (activePlayer.controller.kind !== "bot") {
+      return;
+    }
+
+    const timer = window.setTimeout(() => {
+      setGame((currentGame) => {
+        if (!currentGame || currentGame.phase !== "playing" || currentPlayer(currentGame).controller.kind !== "bot") {
+          return currentGame;
+        }
+
+        return runBotTurn(currentGame).state;
+      });
+    }, 650);
+
+    return () => window.clearTimeout(timer);
+  }, [game, view]);
 
   const applyDashboardData = (data: OnlineDashboardData) => {
     setFriendsState(data.friendsState);
@@ -369,8 +422,8 @@ export default function App(): ReactElement {
     };
   }, [profile, currentRoomSubscriptionKey]);
 
-  const startGame = ({ playerCount, tabletopMode }: SetupStartOptions) => {
-    setGame(newGame({ playerCount, tabletopMode }));
+  const startGame = ({ playerCount, tabletopMode, playerNames, playerControllers }: SetupStartOptions) => {
+    setGame(newGame({ playerCount, tabletopMode, playerNames, playerControllers }));
     setShowMenu(false);
     setView("local-game");
   };
@@ -430,7 +483,7 @@ export default function App(): ReactElement {
     }
   };
 
-  const handleCreateOnlineGame = async ({ playerCount, invitedProfileIds, hasOpenSeats }: CreateGameRequest) => {
+  const handleCreateOnlineGame = async ({ playerCount, invitedProfileIds, botSeats, hasOpenSeats }: CreateGameRequest) => {
     if (!profile) {
       return;
     }
@@ -441,7 +494,8 @@ export default function App(): ReactElement {
     try {
       const bundle = await createRoom(profile.id, {
         playerCount,
-        visibility: hasOpenSeats ? "public" : "private"
+        visibility: hasOpenSeats ? "public" : "private",
+        botSeats
       });
 
       await Promise.all(invitedProfileIds.map((friendProfileId) => inviteFriendToRoom(bundle.room.id, profile.id, friendProfileId)));
@@ -531,11 +585,11 @@ export default function App(): ReactElement {
     );
   }
 
-  if (isSupabaseConfigured() && onlineLoading) {
+  if (isOnlineView(view) && isSupabaseConfigured() && onlineLoading) {
     return <OnlineLoadingScreen />;
   }
 
-  if (isSupabaseConfigured() && !profile) {
+  if (isOnlineView(view) && isSupabaseConfigured() && !profile) {
     return (
       <ProfileGate
         initialName={profileName}
@@ -844,17 +898,17 @@ function HomeScreen({
       <section className="setup-panel home-panel" aria-labelledby="home-title">
         <img className="setup-logo" src={logoUrl} alt="Disuko" />
         <h1 id="home-title">Disuko</h1>
-        {onlineName ? <p className="setup-copy">Playing as {onlineName}</p> : null}
+        <p className="setup-copy">Choose a table. Every mode supports computer players.</p>
 
         <div className="home-action-grid" aria-label="Main menu">
           <button className="home-action-button is-local" type="button" onClick={onLocalGame}>
-            <strong>Local Game</strong>
-            <span>{hasLocalGame ? "Resume table" : "Choose players"}</span>
+            <strong>{hasLocalGame ? "Resume Local Game" : "Play Local"}</strong>
+            <span>{hasLocalGame ? "Your saved table is ready" : "Pass-and-play or add bots"}</span>
           </button>
           <button className="home-action-button is-online" type="button" onClick={onOnlineGame}>
             {hasOnlineAlert ? <span className="home-alert-badge" aria-label="Online action needed">!</span> : null}
-            <strong>Online Game</strong>
-            <span>Current games</span>
+            <strong>Play Online</strong>
+            <span>{onlineName ? `Signed in as ${onlineName}` : "Friends, open seats, and bots"}</span>
           </button>
           <button className="home-action-button is-friends" type="button" onClick={onFriends}>
             <strong>Friends</strong>
@@ -1206,35 +1260,48 @@ function OnlineCreateGameScreen({
   onBack: () => void;
   onCreate: (request: CreateGameRequest) => void;
 }): ReactElement {
-  const [guestSlots, setGuestSlots] = useState<Array<{ enabled: boolean; profile: DisukoProfileRow | null }>>([
-    { enabled: true, profile: null },
-    { enabled: false, profile: null },
-    { enabled: false, profile: null }
+  type OnlineGuestSlot =
+    | { kind: "disabled" }
+    | { kind: "open" }
+    | { kind: "friend"; profile: DisukoProfileRow }
+    | { kind: "bot"; difficulty: BotDifficulty };
+
+  const [guestSlots, setGuestSlots] = useState<OnlineGuestSlot[]>([
+    { kind: "open" },
+    { kind: "disabled" },
+    { kind: "disabled" }
   ]);
   const [pickerIndex, setPickerIndex] = useState<number | null>(null);
-  const enabledGuests = guestSlots.filter((slot) => slot.enabled);
+  const enabledGuests = guestSlots.filter((slot) => slot.kind !== "disabled");
   const playerCount = (1 + enabledGuests.length) as 2 | 3 | 4;
   const invitedProfileIds = enabledGuests
-    .map((slot) => slot.profile?.id)
-    .filter((profileId): profileId is string => Boolean(profileId));
-  const hasOpenSeats = enabledGuests.some((slot) => !slot.profile);
+    .filter((slot): slot is Extract<OnlineGuestSlot, { kind: "friend" }> => slot.kind === "friend")
+    .map((slot) => slot.profile.id);
+  const botSeats = guestSlots.flatMap((slot, index) => {
+    return slot.kind === "bot" ? [{ seatIndex: index + 1, difficulty: slot.difficulty, name: botDisplayName(slot.difficulty, index + 1) }] : [];
+  });
+  const hasOpenSeats = enabledGuests.some((slot) => slot.kind === "open");
 
-  const updateGuestSlot = (index: number, nextSlot: { enabled: boolean; profile: DisukoProfileRow | null }) => {
-    setGuestSlots((currentSlots) => currentSlots.map((slot, slotIndex) => slotIndex === index ? nextSlot : slot));
+  const updateGuestSlot = (index: number, nextSlot: OnlineGuestSlot) => {
+    setGuestSlots((currentSlots) => currentSlots.map((slot, slotIndex) => {
+      if (slotIndex === index) return nextSlot;
+      if (nextSlot.kind !== "disabled" && slotIndex < index && slot.kind === "disabled") return { kind: "open" };
+      if (nextSlot.kind === "disabled" && slotIndex > index) return { kind: "disabled" };
+      return slot;
+    }));
   };
 
   const enableGuestSlot = (index: number) => {
-    updateGuestSlot(index, { enabled: true, profile: null });
-    setPickerIndex(index);
+    updateGuestSlot(index, { kind: "open" });
   };
 
   const removeGuestSlot = (index: number) => {
     if (index === 0) {
-      updateGuestSlot(index, { enabled: true, profile: null });
+      updateGuestSlot(index, { kind: "open" });
       return;
     }
 
-    updateGuestSlot(index, { enabled: false, profile: null });
+    updateGuestSlot(index, { kind: "disabled" });
   };
 
   const chooseFriend = (friendProfile: DisukoProfileRow | null) => {
@@ -1242,7 +1309,7 @@ function OnlineCreateGameScreen({
       return;
     }
 
-    updateGuestSlot(pickerIndex, { enabled: true, profile: friendProfile });
+    updateGuestSlot(pickerIndex, friendProfile ? { kind: "friend", profile: friendProfile } : { kind: "open" });
     setPickerIndex(null);
   };
 
@@ -1252,32 +1319,70 @@ function OnlineCreateGameScreen({
     }
 
     const selectedIds = new Set(
-      guestSlots
-        .map((slot, index) => index === pickerIndex ? null : slot.profile?.id)
-        .filter((profileId): profileId is string => Boolean(profileId))
+      guestSlots.flatMap((slot, index) => index !== pickerIndex && slot.kind === "friend" ? [slot.profile.id] : [])
     );
 
     return friends.filter((friend) => !selectedIds.has(friend.profile.id));
   }, [friends, guestSlots, pickerIndex]);
 
   return (
-    <OnlineFrame title="Create game" onBack={onBack}>
+    <OnlineFrame title="Create an online game" onBack={onBack}>
+      <p className="setup-copy online-intro-copy">Fill each seat with a friend, an open invite, or a bot.</p>
       {error ? <p className="setup-warning" role="alert">{error}</p> : null}
       <div className="online-stack">
         <section className="online-card create-game-card">
           <div className="create-slot-grid" aria-label="Player slots">
             <article className="create-slot is-you">
               <strong>{profile.display_name}</strong>
-              <span>You</span>
+              <span>You - Host</span>
             </article>
             {guestSlots.map((slot, index) => (
-              <article className={`create-slot ${slot.enabled ? "is-enabled" : "is-disabled"}`} key={index}>
-                {slot.enabled ? (
+              <article className={`create-slot is-${slot.kind}`} key={index}>
+                {slot.kind !== "disabled" ? (
                   <>
-                    <button className="create-slot-main" type="button" onClick={() => setPickerIndex(index)}>
-                      <strong>{slot.profile?.display_name ?? "Open seat"}</strong>
-                      <span>{slot.profile ? "Invited friend" : index === 0 ? "Second player" : `Player ${index + 2}`}</span>
-                    </button>
+                    <div className="create-slot-content">
+                      <strong>
+                        {slot.kind === "friend"
+                          ? slot.profile.display_name
+                          : slot.kind === "bot"
+                            ? botDisplayName(slot.difficulty, index + 1)
+                            : "Open seat"}
+                      </strong>
+                      <span>
+                        {slot.kind === "friend"
+                          ? "Invited friend"
+                          : slot.kind === "bot"
+                            ? `${slot.difficulty} bot`
+                            : index === 0 ? "Second player" : `Player ${index + 2}`}
+                      </span>
+                    </div>
+                    <div className="seat-type-switch online-seat-switch" role="group" aria-label={`Player ${index + 2} type`}>
+                      <button
+                        aria-pressed={slot.kind === "open" || slot.kind === "friend"}
+                        className={slot.kind === "open" || slot.kind === "friend" ? "is-active" : ""}
+                        type="button"
+                        onClick={() => setPickerIndex(index)}
+                      >
+                        Player
+                      </button>
+                      <button
+                        aria-pressed={slot.kind === "bot"}
+                        className={slot.kind === "bot" ? "is-active" : ""}
+                        type="button"
+                        onClick={() => updateGuestSlot(index, {
+                          kind: "bot",
+                          difficulty: slot.kind === "bot" ? slot.difficulty : "medium"
+                        })}
+                      >
+                        Bot
+                      </button>
+                    </div>
+                    {slot.kind === "bot" ? (
+                      <BotDifficultySelector
+                        value={slot.difficulty}
+                        onChange={(difficulty) => updateGuestSlot(index, { kind: "bot", difficulty })}
+                      />
+                    ) : null}
                     {index > 0 ? (
                       <button className="create-slot-remove" type="button" onClick={() => removeGuestSlot(index)}>
                         Remove
@@ -1286,23 +1391,25 @@ function OnlineCreateGameScreen({
                   </>
                 ) : (
                   <button className="create-slot-add" type="button" onClick={() => enableGuestSlot(index)}>
-                    <strong>Add</strong>
+                    <strong>Add a seat</strong>
                     <span>Player {index + 2}</span>
                   </button>
                 )}
               </article>
             ))}
           </div>
-          <p className="online-empty">
-            Open seats appear in Join a Game. Friend seats send invites and fill when accepted.
-          </p>
+          <div className="create-game-summary" aria-live="polite">
+            <strong>{playerCount}-player game</strong>
+            <span>{botSeats.length > 0 ? `${botSeats.length} bot${botSeats.length === 1 ? "" : "s"}` : "All human"}</span>
+            <span>{hasOpenSeats ? "Open lobby" : "Private lobby"}</span>
+          </div>
           <button
             className="primary-button"
             type="button"
             disabled={busy}
-            onClick={() => onCreate({ playerCount, invitedProfileIds, hasOpenSeats })}
+            onClick={() => onCreate({ playerCount, invitedProfileIds, botSeats, hasOpenSeats })}
           >
-            Create Game
+            {busy ? "Creating." : "Create Game"}
           </button>
         </section>
       </div>
@@ -1382,7 +1489,7 @@ function CurrentGamesList({
       {rooms.length === 0 ? <p className="online-empty">No current games yet.</p> : null}
       <div className="online-list current-games-list">
         {rooms.map((summary) => {
-          const status = currentRoomStatus(summary.room, profileId);
+          const status = currentRoomStatus(summary.room, profileId, summary.bots);
           const playersLabel = currentRoomPlayersLabel(summary, profileId);
           const detail = currentRoomDetail(summary, profileId);
 
@@ -1417,6 +1524,10 @@ function currentRoomStatusLabel(status: ReturnType<typeof currentRoomStatus>): s
     return "Your turn";
   }
 
+  if (status === "bot-turn") {
+    return "Bot turn";
+  }
+
   if (status === "waiting") {
     return "Waiting";
   }
@@ -1431,7 +1542,7 @@ function currentRoomStatusLabel(status: ReturnType<typeof currentRoomStatus>): s
 function currentRoomTitle(summary: CurrentRoomSummary, profileId: string): string {
   const otherPlayers = summary.players
     .filter((player) => player.profile_id !== profileId)
-    .map((player) => player.profile.display_name);
+    .map((player) => player.profile.display_name).concat(summary.bots.map((bot) => bot.display_name));
 
   if (otherPlayers.length > 0) {
     return `Game with ${otherPlayers.join(", ")}`;
@@ -1447,7 +1558,7 @@ function currentRoomTitle(summary: CurrentRoomSummary, profileId: string): strin
 function currentRoomPlayersLabel(summary: CurrentRoomSummary, profileId: string): string {
   const otherPlayers = summary.players
     .filter((player) => player.profile_id !== profileId)
-    .map((player) => player.profile.display_name);
+    .map((player) => player.profile.display_name).concat(summary.bots.map((bot) => bot.display_name));
 
   if (otherPlayers.length === 0) {
     return "Waiting for players";
@@ -1457,10 +1568,10 @@ function currentRoomPlayersLabel(summary: CurrentRoomSummary, profileId: string)
 }
 
 function currentRoomDetail(summary: CurrentRoomSummary, profileId: string): string {
-  const status = currentRoomStatus(summary.room, profileId);
+  const status = currentRoomStatus(summary.room, profileId, summary.bots);
 
   if (status === "lobby") {
-    return `${roomVisibilityLabel(summary.room.visibility)} lobby - ${summary.players.length}/${summary.room.player_count} seats`;
+    return `${roomVisibilityLabel(summary.room.visibility)} lobby - ${roomSeatCount(summary.players, summary.bots)}/${summary.room.player_count} seats`;
   }
 
   if (status === "finished") {
@@ -1471,6 +1582,11 @@ function currentRoomDetail(summary: CurrentRoomSummary, profileId: string): stri
 
   if (status === "your-turn") {
     return turnNumber ? `Turn ${turnNumber} - make your move` : "Make your move";
+  }
+
+  if (status === "bot-turn") {
+    const bot = activeRoomBot(summary.bots, summary.room.game_state);
+    return bot ? `${bot.display_name} is playing${turnNumber ? ` - turn ${turnNumber}` : ""}` : "A bot is playing";
   }
 
   const activeProfileId = summary.room.turn_profile_id;
@@ -1490,10 +1606,8 @@ function finishedRoomDetail(summary: CurrentRoomSummary): string {
     return "Game finished";
   }
 
-  const seatIndex = Number(/^p([1-4])$/u.exec(winnerId)?.[1] ?? 0) - 1;
-  const winner = summary.players.find((player) => player.seat_index === seatIndex);
-
-  return `${winner?.profile.display_name ?? "A player"} won`;
+  const winner = summary.room.game_state?.players.find((player) => player.id === winnerId);
+  return `${winner?.name ?? "A player"} won`;
 }
 
 function FriendRequestList({
@@ -1567,11 +1681,14 @@ function OnlineRoomSession({
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [showMenu, setShowMenu] = useState(false);
+  const [codeCopied, setCodeCopied] = useState(false);
   const autoStartAttemptKey = useRef<string | null>(null);
+  const botTurnAttemptKey = useRef<string | null>(null);
 
   const refreshRoom = async () => {
     const nextBundle = await loadRoomBundle(roomId);
     setBundle(nextBundle);
+    return nextBundle;
   };
 
   useEffect(() => {
@@ -1607,8 +1724,30 @@ function OnlineRoomSession({
       void refreshRoom();
     });
   }, [roomId]);
+  useEffect(() => {
+    const refreshIfVisible = () => {
+      if (document.visibilityState !== "hidden") {
+        void refreshRoom();
+      }
+    };
+
+    window.addEventListener("online", refreshIfVisible);
+    document.addEventListener("visibilitychange", refreshIfVisible);
+
+    return () => {
+      window.removeEventListener("online", refreshIfVisible);
+      document.removeEventListener("visibilitychange", refreshIfVisible);
+    };
+  }, [roomId]);
+
+
 
   const handleLeave = async () => {
+    if (bundle?.room.host_profile_id === profile.id) {
+      onExit();
+      return;
+    }
+
     setSaving(true);
     setError(null);
 
@@ -1636,6 +1775,19 @@ function OnlineRoomSession({
       setSaving(false);
     }
   };
+  const handleCopyRoomCode = async () => {
+    try {
+      if (!navigator.clipboard) {
+        throw new Error("Clipboard access is unavailable in this browser.");
+      }
+
+      await navigator.clipboard.writeText(bundle?.room.room_code ?? "");
+      setCodeCopied(true);
+    } catch (caughtError) {
+      setError(formatError(caughtError));
+    }
+  };
+
 
   const handleOnlineCommit = (nextGame: GameState) => {
     if (!bundle || saving) {
@@ -1648,7 +1800,7 @@ function OnlineRoomSession({
     }
 
     const currentBundle = bundle;
-    const optimisticRoom = optimisticRoomAfterGameCommit(currentBundle.room, currentBundle.players, profile.id, nextGame);
+    const optimisticRoom = optimisticRoomAfterGameCommit(currentBundle.room, currentBundle.players, profile.id, nextGame, currentBundle.bots);
 
     setSaving(true);
     setError(null);
@@ -1660,7 +1812,7 @@ function OnlineRoomSession({
       });
     }
 
-    void commitRoomGameState(currentBundle.room, currentBundle.players, profile.id, nextGame)
+    void commitRoomGameState(currentBundle.room, currentBundle.players, profile.id, nextGame, currentBundle.bots)
       .then(async (result) => {
         if (result.ok && result.room) {
           setBundle((latest) => latest ? { ...latest, room: result.room as RoomBundle["room"] } : latest);
@@ -1678,44 +1830,120 @@ function OnlineRoomSession({
   };
 
   useEffect(() => {
-    if (!bundle || saving || bundle.room.status !== "lobby" || bundle.players.length !== bundle.room.player_count) {
+    const seatCount = bundle ? roomSeatCount(bundle.players, bundle.bots) : 0;
+
+    if (!bundle || saving || bundle.room.status !== "lobby" || seatCount !== bundle.room.player_count) {
       return;
     }
 
-    const attemptKey = `${bundle.room.id}:${bundle.room.state_version}:${bundle.players.length}`;
+    const attemptKey = `${bundle.room.id}:${bundle.room.state_version}:${seatCount}`;
 
     if (autoStartAttemptKey.current === attemptKey) {
       return;
     }
-
-    let canceled = false;
 
     autoStartAttemptKey.current = attemptKey;
     setSaving(true);
     setError(null);
 
     void startRoomIfReady(bundle)
-      .then((nextBundle) => {
-        if (!canceled) {
-          setBundle(nextBundle);
-        }
-      })
+      .then((nextBundle) => setBundle(nextBundle))
       .catch(async (caughtError: unknown) => {
-        if (!canceled) {
-          setError(formatError(caughtError));
-          await refreshRoom();
-        }
+        setError(formatError(caughtError));
+        await refreshRoom();
       })
-      .finally(() => {
-        if (!canceled) {
-          setSaving(false);
-        }
-      });
+      .finally(() => setSaving(false));
+  }, [bundle, saving]);
+
+  useEffect(() => {
+    const game = bundle?.room.game_state;
+
+    if (!bundle || !game || saving || bundle.room.status !== "playing") {
+      return;
+    }
+
+    const bot = activeRoomBot(bundle.bots, game);
+
+    if (!bot || bundle.room.host_profile_id !== profile.id || bundle.room.turn_profile_id !== profile.id) {
+      return;
+    }
+
+    const attemptKey = `${bundle.room.id}:${bundle.room.state_version}`;
+
+    if (botTurnAttemptKey.current === attemptKey) {
+      return;
+    }
+
+    const currentBundle = bundle;
+    let commitStarted = false;
+    const timer = window.setTimeout(() => {
+      const botTurn = runBotTurn(game, { difficulty: bot.difficulty });
+      if (botTurnAttemptKey.current === attemptKey) {
+        return;
+      }
+
+      botTurnAttemptKey.current = attemptKey;
+
+      if (botTurn.actions.length === 0) {
+        setError(`${bot.display_name} could not find a legal action.`);
+        return;
+      }
+
+      const optimisticRoom = optimisticRoomAfterGameCommit(
+        currentBundle.room,
+        currentBundle.players,
+        profile.id,
+        botTurn.state,
+        currentBundle.bots
+      );
+
+      commitStarted = true;
+      setSaving(true);
+      setError(null);
+
+      if (optimisticRoom) {
+        setBundle({ ...currentBundle, room: optimisticRoom });
+      }
+
+      void commitRoomGameState(
+        currentBundle.room,
+        currentBundle.players,
+        profile.id,
+        botTurn.state,
+        currentBundle.bots
+      )
+        .then(async (result) => {
+          if (result.ok && result.room) {
+            setBundle((latest) => latest ? { ...latest, room: result.room as RoomBundle["room"] } : latest);
+            return;
+          }
+
+          setError("The room changed while the bot was thinking. Refreshed the board.");
+          await refreshRoom();
+        })
+        .catch(async (caughtError: unknown) => {
+          setError(formatError(caughtError));
+
+          try {
+            const refreshed = await refreshRoom();
+
+            if (refreshed.room.state_version === currentBundle.room.state_version) {
+              botTurnAttemptKey.current = null;
+            }
+          } catch (refreshError) {
+            setError(`${formatError(caughtError)} ${formatError(refreshError)}`);
+          }
+        })
+        .finally(() => setSaving(false));
+    }, 550);
 
     return () => {
-      canceled = true;
+      window.clearTimeout(timer);
+      if (!commitStarted && botTurnAttemptKey.current === attemptKey) {
+        botTurnAttemptKey.current = null;
+      }
     };
-  }, [bundle, saving]);
+  }, [bundle, profile.id, saving]);
 
   if (loading || !bundle) {
     return (
@@ -1734,10 +1962,11 @@ function OnlineRoomSession({
     const pendingInvites = bundle.pendingInvites.filter((invite) => !seatedFriendIds.has(invite.invite.recipient_profile_id));
     const pendingInviteByRecipientId = new Map(pendingInvites.map((invite) => [invite.invite.recipient_profile_id, invite]));
     const emptySeatIndexes = Array.from({ length: bundle.room.player_count }, (_, seatIndex) => seatIndex).filter((seatIndex) => {
-      return !bundle.players.some((player) => player.seat_index === seatIndex);
+      return !bundle.players.some((player) => player.seat_index === seatIndex) && !bundle.bots.some((bot) => bot.seat_index === seatIndex);
     });
     const pendingInviteBySeatIndex = new Map(emptySeatIndexes.map((seatIndex, index) => [seatIndex, pendingInvites[index]]));
     const friendsNotSeated = friends.filter((friend) => !seatedFriendIds.has(friend.profile.id));
+    const seatCount = roomSeatCount(bundle.players, bundle.bots);
 
     return (
       <main className="setup-screen online-screen">
@@ -1745,22 +1974,33 @@ function OnlineRoomSession({
           <img className="setup-logo" src={logoUrl} alt="Disuko" />
           <h1 id="room-title">Game lobby</h1>
           <p className="setup-copy">
-            {roomVisibilityLabel(bundle.room.visibility)} game - {bundle.players.length}/{bundle.room.player_count} seats
+            {roomVisibilityLabel(bundle.room.visibility)} game - {seatCount}/{bundle.room.player_count} seats
           </p>
+
+          <div className="online-room-code">
+            <div>
+              <span>Room code</span>
+              <code>{bundle.room.room_code}</code>
+            </div>
+            <button className="secondary-button online-small-button" type="button" disabled={saving} onClick={() => void handleCopyRoomCode()}>
+              {codeCopied ? "Copied" : "Copy code"}
+            </button>
+          </div>
           {error ? <p className="setup-warning" role="alert">{error}</p> : null}
 
           <section className="online-card">
-            <h2>Players</h2>
+            <h2>Seats</h2>
             <div className="online-list">
               {Array.from({ length: bundle.room.player_count }, (_, seatIndex) => {
                 const player = bundle.players.find((candidate) => candidate.seat_index === seatIndex);
+                const bot = bundle.bots.find((candidate) => candidate.seat_index === seatIndex);
                 const pendingInvite = pendingInviteBySeatIndex.get(seatIndex);
 
                 return (
-                  <article className={`online-list-item ${pendingInvite ? "is-pending-invite" : ""}`} key={seatIndex}>
+                  <article className={`online-list-item ${bot ? "is-bot-seat" : pendingInvite ? "is-pending-invite" : ""}`} key={seatIndex}>
                     <div>
-                      <strong>{player?.profile.display_name ?? pendingInvite?.recipient.display_name ?? `Seat ${seatIndex + 1}`}</strong>
-                      <span>{player ? playerIdForUiSeat(seatIndex) : pendingInvite ? "Invited" : "Waiting"}</span>
+                      <strong>{player?.profile.display_name ?? bot?.display_name ?? pendingInvite?.recipient.display_name ?? `Seat ${seatIndex + 1}`}</strong>
+                      <span>{player ? playerIdForUiSeat(seatIndex) : bot ? `${bot.difficulty[0].toUpperCase()}${bot.difficulty.slice(1)} bot - ${playerIdForUiSeat(seatIndex)}` : pendingInvite ? "Invited" : "Waiting"}</span>
                     </div>
                   </article>
                 );
@@ -1798,9 +2038,9 @@ function OnlineRoomSession({
 
           <div className="setup-actions">
             <button className="secondary-button" type="button" disabled={saving} onClick={() => void handleLeave()}>
-              Leave
+              {bundle.room.host_profile_id === profile.id ? "Back to games" : "Leave"}
             </button>
-            {bundle.players.length === bundle.room.player_count ? (
+            {seatCount === bundle.room.player_count ? (
               <span className="online-lobby-status" role="status">{saving ? "Starting..." : "Ready"}</span>
             ) : null}
           </div>
@@ -1814,6 +2054,12 @@ function OnlineRoomSession({
   const onlineSeat = bundle.players.find((player) => player.profile_id === profile.id);
   const onlinePlayerId = onlineSeat ? playerIdForSeat(onlineSeat.seat_index) : undefined;
 
+  const activeOnlinePlayer = currentPlayer(onlineGame);
+  const onlineStatus = activeOnlinePlayer.controller?.kind === "bot"
+    ? `${activeOnlinePlayer.name} is taking a turn`
+    : activeOnlinePlayer.id === onlinePlayerId
+      ? "Your turn"
+      : `Waiting for ${activeOnlinePlayer.name}`;
   return (
     <GameScreen
       game={onlineGame}
@@ -1826,6 +2072,7 @@ function OnlineRoomSession({
       suppressTurnPrompt
     >
       <OnlineGameBanner
+        status={onlineStatus}
         saving={saving}
         error={error}
       />
@@ -1843,18 +2090,17 @@ function OnlineRoomSession({
 
 function OnlineGameBanner({
   saving,
+  status,
   error
 }: {
   saving: boolean;
+  status: string;
   error: string | null;
-}): ReactElement | null {
-  if (!saving && !error) {
-    return null;
-  }
-
+}): ReactElement {
   return (
     <aside className="online-game-banner" aria-live="polite">
-      {saving ? <span>Syncing...</span> : null}
+      <strong>{status}</strong>
+      {saving ? <span>Syncing.</span> : <span>Online game</span>}
       {error ? <em>{error}</em> : null}
     </aside>
   );
@@ -1897,7 +2143,15 @@ function LocalSetupScreen({
 }): ReactElement {
   const [playerCount, setPlayerCount] = useState<2 | 3 | 4>(2);
   const [tabletopMode, setTabletopMode] = useState(false);
+  const [seatControllers, setSeatControllers] = useState<PlayerController[]>([
+    { kind: "human" },
+    { kind: "bot", difficulty: "medium" },
+    { kind: "human" },
+    { kind: "human" }
+  ]);
   const viewportSize = useViewportSize();
+  const activeControllers = seatControllers.slice(0, playerCount);
+  const hasBots = activeControllers.some((controller) => controller.kind === "bot");
   const tabletopViewportSupported = isTabletopViewportSupported({
     playerCount,
     viewportWidthPx: viewportSize.width,
@@ -1905,66 +2159,161 @@ function LocalSetupScreen({
     rootFontSizePx: viewportSize.rootFontSizePx
   });
   const tabletopBlockedByViewport = playerCount >= 3 && !tabletopViewportSupported;
+  const tabletopUnavailable = hasBots || tabletopBlockedByViewport;
 
   useEffect(() => {
-    if (tabletopMode && tabletopBlockedByViewport) {
+    if (tabletopMode && tabletopUnavailable) {
       setTabletopMode(false);
     }
-  }, [tabletopBlockedByViewport, tabletopMode]);
+  }, [tabletopMode, tabletopUnavailable]);
+
+  const updateSeatController = (seatIndex: number, controller: PlayerController) => {
+    setSeatControllers((current) => current.map((value, index) => index === seatIndex ? controller : value));
+  };
+
+  const startConfiguredGame = () => {
+    const playerControllers = seatControllers.slice(0, playerCount);
+    const playerNames = playerControllers.map((controller, index) => {
+      return controller.kind === "bot" ? botDisplayName(controller.difficulty, index) : `Player ${index + 1}`;
+    });
+
+    onStart({ playerCount, tabletopMode, playerNames, playerControllers });
+  };
 
   return (
-    <main className="setup-screen">
-      <section className="setup-panel" aria-labelledby="setup-title">
+    <main className="setup-screen local-setup-screen">
+      <section className="setup-panel local-setup-panel" aria-labelledby="setup-title">
         <img className="setup-logo" src={logoUrl} alt="Disuko" />
-        <h1 id="setup-title">Local Disuko</h1>
+        <h1 id="setup-title">Set up a local game</h1>
         <p className="setup-copy">
-          Race to place your dice on a 6x6 Sudoku board. Duplicates can stay on the table until
-          another player challenges them.
+          Be first to place every die. Completing a row, column, box, or set of six earns another action.
         </p>
 
-        <div className="count-selector" role="group" aria-label="Player count">
-          {[2, 3, 4].map((count) => (
-            <button
-              className={playerCount === count ? "is-active" : ""}
-              key={count}
-              type="button"
-              onClick={() => setPlayerCount(count as 2 | 3 | 4)}
+        <section className="setup-section" aria-labelledby="local-player-count-label">
+          <div className="setup-section-heading">
+            <strong id="local-player-count-label">Players</strong>
+            <span>{playerCount} seats</span>
+          </div>
+          <div className="count-selector" role="group" aria-label="Player count">
+            {[2, 3, 4].map((count) => (
+              <button
+                aria-pressed={playerCount === count}
+                className={playerCount === count ? "is-active" : ""}
+                key={count}
+                type="button"
+                onClick={() => setPlayerCount(count as 2 | 3 | 4)}
+              >
+                {count}
+              </button>
+            ))}
+          </div>
+        </section>
+
+        <div className="seat-list" aria-label="Local player seats">
+          {activeControllers.map((controller, seatIndex) => (
+            <article
+              className={`seat-card ${seatIndex === 0 ? "is-you" : ""} ${controller.kind === "bot" ? "is-bot" : ""}`}
+              key={seatIndex}
+              style={{ "--seat-color": playerColorCssVars[["blue", "red", "green", "yellow"][seatIndex] as PlayerColor] } as CSSProperties}
             >
-              {count} players
-            </button>
+              <div className="seat-card-heading">
+                <div>
+                  <strong>{controller.kind === "bot" ? botDisplayName(controller.difficulty, seatIndex) : `Player ${seatIndex + 1}`}</strong>
+                  <span>{seatIndex === 0 ? "You" : controller.kind === "bot" ? "Computer player" : "Pass and play"}</span>
+                </div>
+                <span className="seat-number">P{seatIndex + 1}</span>
+              </div>
+
+              {seatIndex > 0 ? (
+                <>
+                  <div className="seat-type-switch" role="group" aria-label={`Player ${seatIndex + 1} type`}>
+                    <button
+                      aria-pressed={controller.kind === "human"}
+                      className={controller.kind === "human" ? "is-active" : ""}
+                      type="button"
+                      onClick={() => updateSeatController(seatIndex, { kind: "human" })}
+                    >
+                      Local
+                    </button>
+                    <button
+                      aria-pressed={controller.kind === "bot"}
+                      className={controller.kind === "bot" ? "is-active" : ""}
+                      type="button"
+                      onClick={() => updateSeatController(seatIndex, {
+                        kind: "bot",
+                        difficulty: controller.kind === "bot" ? controller.difficulty : "medium"
+                      })}
+                    >
+                      Bot
+                    </button>
+                  </div>
+                  {controller.kind === "bot" ? (
+                    <BotDifficultySelector
+                      value={controller.difficulty}
+                      onChange={(difficulty) => updateSeatController(seatIndex, { kind: "bot", difficulty })}
+                    />
+                  ) : null}
+                </>
+              ) : null}
+            </article>
           ))}
         </div>
 
-        {tabletopBlockedByViewport ? (
+        <label className={`tabletop-toggle ${tabletopMode ? "is-active" : ""} ${tabletopUnavailable ? "is-disabled" : ""}`}>
+          <span>
+            Tabletop mode
+            <small>Face each tray toward its player</small>
+          </span>
+          <input
+            type="checkbox"
+            checked={tabletopMode}
+            disabled={tabletopUnavailable}
+            onChange={(event) => setTabletopMode(event.currentTarget.checked)}
+          />
+          <span className="toggle-track" aria-hidden="true"><span /></span>
+        </label>
+        {tabletopUnavailable ? (
           <p className="setup-warning" role="status">
-            This device dimensions are not compatible with tabletop mode for more than 2 players.
+            {hasBots
+              ? "Tabletop mode is available for all-human games. Bots play in the standard layout."
+              : "This screen is too small for tabletop mode with three or four players."}
           </p>
-        ) : (
-          <label className={`tabletop-toggle ${tabletopMode ? "is-active" : ""}`}>
-            <span>Table top mode</span>
-            <input
-              type="checkbox"
-              checked={tabletopMode}
-              onChange={(event) => setTabletopMode(event.currentTarget.checked)}
-            />
-            <span className="toggle-track" aria-hidden="true">
-              <span />
-            </span>
-          </label>
-        )}
+        ) : null}
 
         <div className="setup-actions">
           {onCancel ? (
-            <button className="secondary-button" type="button" onClick={onCancel}>
-              Cancel
-            </button>
+            <button className="secondary-button" type="button" onClick={onCancel}>Back</button>
           ) : null}
-          <button className="primary-button" type="button" onClick={() => onStart({ playerCount, tabletopMode })}>
-            Start Local Game
+          <button className="primary-button" type="button" onClick={startConfiguredGame}>
+            Start Game
           </button>
         </div>
       </section>
     </main>
+  );
+}
+
+function BotDifficultySelector({
+  value,
+  onChange
+}: {
+  value: BotDifficulty;
+  onChange: (difficulty: BotDifficulty) => void;
+}): ReactElement {
+  return (
+    <div className="difficulty-selector" role="group" aria-label="Bot difficulty">
+      {BOT_DIFFICULTIES.map((difficulty) => (
+        <button
+          aria-pressed={value === difficulty}
+          className={value === difficulty ? "is-active" : ""}
+          key={difficulty}
+          type="button"
+          onClick={() => onChange(difficulty)}
+        >
+          {difficulty}
+        </button>
+      ))}
+    </div>
   );
 }
 
@@ -2040,14 +2389,20 @@ function GameScreen({
     ? game.players.find((player) => player.id === onlinePlayerId) ?? activePlayer
     : activePlayer;
   const actionCountLabel = `${game.actionCredits} action${game.actionCredits === 1 ? "" : "s"}`;
+  const isBotTurn = activePlayer.controller?.kind === "bot";
   const onlineWaitingTurnLabel = showOnlinePlayerNames && onlinePlayerId && activePlayer.id !== onlinePlayerId
     ? `${activePlayer.name}'s turn`
     : null;
-  const canUseTurnControls = !showOnlinePlayerNames || Boolean(onlinePlayerId && activePlayer.id === onlinePlayerId);
+  const canUseTurnControls = !isBotTurn && (!showOnlinePlayerNames || Boolean(onlinePlayerId && activePlayer.id === onlinePlayerId));
+  const winner = game.winnerId ? game.players.find((player) => player.id === game.winnerId) : undefined;
+  const gameStatusLabel = game.phase === "won"
+    ? `${winner?.name ?? "A player"} won`
+    : isBotTurn
+      ? `${activePlayer.name} is thinking.`
+      : showOnlinePlayerNames ? onlineWaitingTurnLabel ?? "Your turn" : `${activePlayer.name}'s turn`;
   const trayStatusLabel = game.mode === "reroll" ? "Select the dice to re-roll" : actionCountLabel;
   const activePlayerNumber = game.currentPlayerIndex + 1;
   const activePlayerColor = playerColorCssVars[activePlayer.color];
-  const winner = game.winnerId ? game.players.find((player) => player.id === game.winnerId) : undefined;
   const conflictDice = useMemo(() => conflictDieIds(game), [game]);
   const conflictCells = useMemo(() => conflictCellKeys(game), [game]);
   const completionRewardOverlay: BoardCompletionReward | null = completionReward
@@ -2358,9 +2713,9 @@ function GameScreen({
       setOpenRerollValue(null);
       setHasExplicitRerollSelection(false);
       clearStackLongPress();
-      setTurnPromptOpen(!game.tabletopMode && !suppressTurnPrompt);
+      setTurnPromptOpen(!game.tabletopMode && !suppressTurnPrompt && !isBotTurn);
     }
-  }, [game.seed, game.turnNumber, game.currentPlayerIndex, game.phase, game.tabletopMode, suppressTurnPrompt]);
+  }, [game.seed, game.turnNumber, game.currentPlayerIndex, game.phase, game.tabletopMode, suppressTurnPrompt, isBotTurn]);
 
   useEffect(() => {
     if (suppressTurnPrompt) {
@@ -2968,7 +3323,7 @@ function GameScreen({
         rollActive={rerollReady}
         disabled={disabled}
         hidePlayerName={game.tabletopMode}
-        showPlayerName={showOnlinePlayerNames}
+        showPlayerName={showOnlinePlayerNames || player.controller?.kind === "bot"}
         className={trayClassName}
         style={{ "--tray-player-color": playerColorCssVars[player.color] } as CSSProperties}
         onGroup={handleTrayGroup}
@@ -3009,7 +3364,10 @@ function GameScreen({
               <span />
               <span />
             </button>
-            <img className="game-logo" src={logoUrl} alt="Disuko" />
+            <div className="game-brand-stack">
+              <img className="game-logo" src={logoUrl} alt="Disuko" />
+              <span className={`game-status-pill ${isBotTurn ? "is-bot-turn" : ""}`} aria-live="polite">{gameStatusLabel}</span>
+            </div>
             <button className="new-game-chip" type="button" onClick={handleNewGame}>
               {newGameLabel}
             </button>
@@ -3062,7 +3420,7 @@ function GameScreen({
         </>
       ) : null}
 
-      {turnPromptOpen && game.phase === "playing" && !game.tabletopMode && !suppressTurnPrompt ? (
+      {turnPromptOpen && game.phase === "playing" && !isBotTurn && !game.tabletopMode && !suppressTurnPrompt ? (
         <TurnStartPrompt player={activePlayer} playerNumber={activePlayerNumber} onPlay={() => setTurnPromptOpen(false)} />
       ) : null}
 
@@ -3388,7 +3746,7 @@ function OpponentTrayStrip({
 
         return (
           <article className={rowClassName} key={player.id}>
-            <strong>{showPlayerNames ? player.name : `Player ${playerIndex}`}</strong>
+            <strong>{showPlayerNames || player.controller?.kind === "bot" ? player.name : `Player ${playerIndex}`}</strong>
             <DiceRail
               groups={groupDiceByValue(offBoardDice(game, player.id))}
               draggingDieId={hiddenDieId}
@@ -4028,7 +4386,16 @@ function DieFace({
         />
       ))}
       {multiplier ? <span className="die-multiplier">{multiplier}</span> : null}
-      {moveLocked ? <span className="die-lock-icon" aria-hidden="true" /> : null}
+      {moveLocked ? (
+        <span className="die-lock-icon" aria-hidden="true">
+          <svg viewBox="0 0 24 24" focusable="false">
+            <path d="M7.5 10V7.5a4.5 4.5 0 0 1 9 0V10" />
+            <rect x="5" y="9" width="14" height="11" rx="2.25" />
+            <circle cx="12" cy="14" r="1.25" />
+            <path className="die-lock-keyway" d="M12 15.25v2" />
+          </svg>
+        </span>
+      ) : null}
     </span>
   );
 }

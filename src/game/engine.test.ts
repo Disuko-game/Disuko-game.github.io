@@ -730,4 +730,19 @@ describe("Disuko rules engine", () => {
     expect(restored.players).toHaveLength(3);
     expect(restored.dice).toHaveLength(36);
   });
+
+  it("persists bot controllers and restores legacy saves as human players", () => {
+    const botGame = newGame({
+      playerCount: 2,
+      seed: "bot-controller-save",
+      playerControllers: [{ kind: "human" }, { kind: "bot", difficulty: "hard" }]
+    });
+    const legacySave = JSON.parse(serializeGame(botGame)) as Record<string, unknown>;
+    const legacyPlayers = legacySave.players as Array<Record<string, unknown>>;
+
+    legacyPlayers.forEach((player) => delete player.controller);
+
+    expect(restoreGame(serializeGame(botGame)).players[1].controller).toEqual({ kind: "bot", difficulty: "hard" });
+    expect(restoreGame(JSON.stringify(legacySave)).players.every((player) => player.controller.kind === "human")).toBe(true);
+  });
 });

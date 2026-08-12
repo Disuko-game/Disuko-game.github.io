@@ -38,7 +38,8 @@ export function newGame(options: NewGameOptions): GameState {
   const players: Player[] = Array.from({ length: options.playerCount }, (_, index) => ({
     id: `p${index + 1}`,
     name: options.playerNames?.[index]?.trim() || `Player ${index + 1}`,
-    color: PLAYER_COLORS[index]
+    color: PLAYER_COLORS[index],
+    controller: options.playerControllers?.[index] ?? { kind: "human" }
   }));
   const dice: Die[] = [];
 
@@ -449,7 +450,12 @@ export function restoreGame(serialized: string): GameState {
     version: 1,
     seed: parsed.seed ?? "restored",
     rngState: parsed.rngState ?? seedToState("restored"),
-    players: parsed.players,
+    players: parsed.players.map((player) => ({
+      ...player,
+      controller: player.controller?.kind === "bot"
+        ? { kind: "bot", difficulty: player.controller.difficulty }
+        : { kind: "human" }
+    })),
     dice: parsed.dice,
     tabletopMode: parsed.tabletopMode ?? false,
     currentPlayerIndex: parsed.currentPlayerIndex ?? 0,

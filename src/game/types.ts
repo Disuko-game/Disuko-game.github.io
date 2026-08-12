@@ -8,6 +8,10 @@ export const DICE_VALUES = [1, 2, 3, 4, 5, 6] as const;
 
 export type PlayerColor = (typeof PLAYER_COLORS)[number];
 export type DiceValue = (typeof DICE_VALUES)[number];
+export type BotDifficulty = "easy" | "medium" | "hard";
+export type PlayerController =
+  | { kind: "human" }
+  | { kind: "bot"; difficulty: BotDifficulty };
 export type ActionMode = "place" | "move" | "reroll" | "challenge";
 export type GamePhase = "playing" | "won";
 export type CompletionKind = "row" | "column" | "box" | "value";
@@ -19,6 +23,7 @@ export interface Player {
   id: string;
   name: string;
   color: PlayerColor;
+  controller: PlayerController;
 }
 
 export interface Die {
@@ -90,4 +95,5 @@ export interface NewGameOptions {
   seed?: string;
   tabletopMode?: boolean;
   playerNames?: string[];
+  playerControllers?: PlayerController[];
 }

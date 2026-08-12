@@ -119,6 +119,30 @@ export interface Database {
         };
         Relationships: [];
       };
+      disuko_room_bots: {
+        Row: {
+          room_id: string;
+          seat_index: number;
+          difficulty: "easy" | "medium" | "hard";
+          display_name: string;
+          created_by_profile_id: string;
+          joined_at: string;
+        };
+        Insert: {
+          room_id: string;
+          seat_index: number;
+          difficulty: "easy" | "medium" | "hard";
+          display_name: string;
+          created_by_profile_id: string;
+          joined_at?: string;
+        };
+        Update: {
+          seat_index?: number;
+          difficulty?: "easy" | "medium" | "hard";
+          display_name?: string;
+        };
+        Relationships: [];
+      };
       disuko_room_invites: {
         Row: {
           id: string;
@@ -156,6 +180,7 @@ export type DisukoProfileRow = Database["public"]["Tables"]["disuko_profiles"]["
 export type DisukoFriendRequestRow = Database["public"]["Tables"]["disuko_friend_requests"]["Row"];
 export type DisukoRoomRow = Database["public"]["Tables"]["disuko_rooms"]["Row"];
 export type DisukoRoomPlayerRow = Database["public"]["Tables"]["disuko_room_players"]["Row"];
+export type DisukoRoomBotRow = Database["public"]["Tables"]["disuko_room_bots"]["Row"];
 export type DisukoRoomInviteRow = Database["public"]["Tables"]["disuko_room_invites"]["Row"];
 
 export type DisukoRoomWithGameState = Omit<DisukoRoomRow, "game_state"> & {

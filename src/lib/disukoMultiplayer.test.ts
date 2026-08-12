@@ -6,6 +6,9 @@ import {
   normalizeAnonymousAuthError,
   optimisticRoomAfterGameCommit,
   playerNamesForRoom,
+  playerControllersForRoom,
+  roomSeatCount,
+  type RoomBot,
   turnProfileIdForGame,
   type RoomPlayer
 } from "./disukoMultiplayer";
@@ -63,6 +66,17 @@ function roomPlayers(): RoomPlayer[] {
   ];
 }
 
+function roomBots(): RoomBot[] {
+  return [{
+    room_id: "room-1",
+    seat_index: 1,
+    difficulty: "hard",
+    display_name: "Oracle - P2",
+    created_by_profile_id: "profile-1",
+    joined_at: createdAt
+  }];
+}
+
 describe("Disuko multiplayer mapping", () => {
   it("maps Supabase room seats to engine player names", () => {
     expect(playerNamesForRoom(roomPlayers(), 2)).toEqual(["Hermione", "Ron"]);
@@ -114,5 +128,34 @@ describe("Disuko multiplayer mapping", () => {
     const normalized = normalizeAnonymousAuthError({ status: 422, message: "Anonymous sign-ins are disabled" });
 
     expect(normalized.message).toContain("anonymous sign-ins are disabled");
+  });
+
+  it("hydrates mixed human and bot seats in engine order", () => {
+    const players = [roomPlayers()[0]];
+    const bots = roomBots();
+
+    expect(playerNamesForRoom(players, 2, bots)).toEqual(["Hermione", "Oracle - P2"]);
+    expect(playerControllersForRoom(bots, 2)).toEqual([
+      { kind: "human" },
+      { kind: "bot", difficulty: "hard" }
+    ]);
+    expect(roomSeatCount(players, bots)).toBe(2);
+  });
+
+  it("maps bot turns to the host controller without labeling them as the host's turn", () => {
+    const players = [roomPlayers()[0]];
+    const bots = roomBots();
+    const game = newGame({
+      playerCount: 2,
+      seed: "bot-controller",
+      playerControllers: [{ kind: "human" }, { kind: "bot", difficulty: "hard" }]
+    });
+    const botTurn = endAction(game);
+    const botRoom = { ...room(botTurn), turn_profile_id: "profile-1" };
+
+    expect(turnProfileIdForGame(players, botTurn, bots, "profile-1")).toBe("profile-1");
+    expect(currentRoomStatus(botRoom, "profile-1", bots)).toBe("bot-turn");
+    expect(currentRoomStatus(botRoom, "profile-2", bots)).toBe("bot-turn");
+    expect(optimisticRoomAfterGameCommit(room(game), players, "profile-1", botTurn, bots)?.turn_profile_id).toBe("profile-1");
   });
 });

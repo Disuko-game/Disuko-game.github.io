@@ -1,4 +1,4 @@
-const CACHE_NAME = "disuko-pwa-faae61c3f942";
+const CACHE_NAME = "disuko-pwa-ceaa480b3360";
 const APP_SHELL = [
   "./",
   "./logo.png",
