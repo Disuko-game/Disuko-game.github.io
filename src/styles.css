@@ -2818,13 +2818,19 @@ select:focus-visible {
 /* Focused setup and PC-turn refinements */
 .local-setup-screen {
   display: grid;
+  width: 100%;
+  height: var(--app-viewport-height);
+  min-height: 0;
   place-items: start center;
   overflow-x: hidden;
   overflow-y: auto;
-  padding-top: max(0.65rem, env(safe-area-inset-top));
+  padding: max(0.65rem, env(safe-area-inset-top)) 1rem max(1rem, env(safe-area-inset-bottom));
+  overscroll-behavior-y: contain;
+  touch-action: pan-y;
 }
 
 .local-setup-panel {
+  align-self: start;
   margin: 0 auto;
 }
 
@@ -2833,7 +2839,8 @@ select:focus-visible {
   margin-bottom: 0.4rem;
 }
 
-.seat-number {
+.seat-card-heading .seat-number {
+  display: grid;
   width: 2.15rem;
   height: 2.15rem;
   min-width: 2.15rem;
