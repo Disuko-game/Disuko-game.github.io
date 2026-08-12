@@ -16,6 +16,27 @@
     <link rel="icon" href="/icon-192.png" />
     <link rel="apple-touch-icon" href="/icon-192.png" />
     <title>Disuko</title>
+    <style>
+      html,
+      body,
+      #root {
+        width: 100%;
+        min-height: 100%;
+        margin: 0;
+        background: #5a2b13;
+      }
+
+      .boot-loader {
+        position: fixed;
+        inset: 0;
+        z-index: 9999;
+        display: grid;
+        place-items: center;
+        background: linear-gradient(180deg, #8a451d 0%, #5b2b12 46%, #35160a 100%);
+      }
+
+      .boot-loader img { width: min(72vw, 22rem); }
+    </style>
     <!-- branch-root-fallback:start -->
     <script>
       window.__DISUKO_DEV__ = ["localhost", "127.0.0.1", "::1"].includes(

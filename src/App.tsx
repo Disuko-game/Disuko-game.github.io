@@ -10,7 +10,7 @@ import {
   type ReactElement,
   type ReactNode
 } from "react";
-import { runBotTurn } from "./game/bot";
+import { applyBotAction, chooseBotAction, runBotTurn } from "./game/bot";
 import { createPortal } from "react-dom";
 import { boxIndex, cellsForBox } from "./game/geometry";
 import {
@@ -92,6 +92,8 @@ const INVALID_MOVE_ANIMATION_MS = 2160;
 const COMPLETION_HIGHLIGHT_MS = 780;
 const COMPLETION_BONUS_MS = 980;
 const COMPACT_TRAY_INITIAL_HEIGHT_PX = 720;
+const LOCAL_BOT_FIRST_ACTION_DELAY_MS = 900;
+const LOCAL_BOT_NEXT_ACTION_DELAY_MS = 760;
 const COMPACT_TRAY_RELEASE_MARGIN_PX = 96;
 const COMPLETION_FEEDBACK_COLOR = "var(--blue)";
 const CONFLICT_BLOCKER_FEEDBACK_COLOR = COMPLETION_FEEDBACK_COLOR;
@@ -141,14 +143,8 @@ const playerColorCssVars: Record<PlayerColor, string> = {
 };
 const BOT_DIFFICULTIES: BotDifficulty[] = ["easy", "medium", "hard"];
 
-function botDisplayName(difficulty: BotDifficulty, seatIndex: number): string {
-  const names: Record<BotDifficulty, string> = {
-    easy: "Pip",
-    medium: "Rook",
-    hard: "Oracle"
-  };
-
-  return `${names[difficulty]} - P${seatIndex + 1}`;
+function botDisplayName(_difficulty: BotDifficulty, pcNumber: number): string {
+  return "PC " + pcNumber;
 }
 
 
@@ -323,15 +319,18 @@ export default function App(): ReactElement {
       return;
     }
 
+    const isFirstBotAction = game.lastAction?.playerId !== activePlayer.id;
     const timer = window.setTimeout(() => {
       setGame((currentGame) => {
-        if (!currentGame || currentGame.phase !== "playing" || currentPlayer(currentGame).controller.kind !== "bot") {
-          return currentGame;
-        }
-
-        return runBotTurn(currentGame).state;
+        if (!currentGame || currentGame.phase !== "playing") return currentGame;
+        const bot = currentPlayer(currentGame);
+        if (bot.controller.kind !== "bot") return currentGame;
+        return applyBotAction(
+          currentGame,
+          chooseBotAction(currentGame, bot.controller.difficulty)
+        );
       });
-    }, 650);
+    }, isFirstBotAction ? LOCAL_BOT_FIRST_ACTION_DELAY_MS : LOCAL_BOT_NEXT_ACTION_DELAY_MS);
 
     return () => window.clearTimeout(timer);
   }, [game, view]);
@@ -610,7 +609,8 @@ export default function App(): ReactElement {
         game={game}
         onCommit={setGame}
         onOpenMenu={() => setShowMenu(true)}
-        onNewGame={() => setView("local-setup")}
+        onNewGame={() => setView("home")}
+        newGameLabel="Home"
       >
         {showMenu && !game.tabletopMode ? (
           <MenuOverlay
@@ -903,12 +903,12 @@ function HomeScreen({
         <div className="home-action-grid" aria-label="Main menu">
           <button className="home-action-button is-local" type="button" onClick={onLocalGame}>
             <strong>{hasLocalGame ? "Resume Local Game" : "Play Local"}</strong>
-            <span>{hasLocalGame ? "Your saved table is ready" : "Pass-and-play or add bots"}</span>
+            <span>{hasLocalGame ? "Your saved table is ready" : "Pass-and-play or add PCs"}</span>
           </button>
           <button className="home-action-button is-online" type="button" onClick={onOnlineGame}>
             {hasOnlineAlert ? <span className="home-alert-badge" aria-label="Online action needed">!</span> : null}
             <strong>Play Online</strong>
-            <span>{onlineName ? `Signed in as ${onlineName}` : "Friends, open seats, and bots"}</span>
+            <span>{onlineName ? `Signed in as ${onlineName}` : "Friends, open seats, and PCs"}</span>
           </button>
           <button className="home-action-button is-friends" type="button" onClick={onFriends}>
             <strong>Friends</strong>
@@ -1277,9 +1277,14 @@ function OnlineCreateGameScreen({
   const invitedProfileIds = enabledGuests
     .filter((slot): slot is Extract<OnlineGuestSlot, { kind: "friend" }> => slot.kind === "friend")
     .map((slot) => slot.profile.id);
+  let onlinePcNumber = 0;
   const botSeats = guestSlots.flatMap((slot, index) => {
-    return slot.kind === "bot" ? [{ seatIndex: index + 1, difficulty: slot.difficulty, name: botDisplayName(slot.difficulty, index + 1) }] : [];
+    if (index === 0 || slot.kind !== "bot") return [];
+    onlinePcNumber += 1;
+    return [{ seatIndex: index + 1, difficulty: slot.difficulty, name: botDisplayName(slot.difficulty, onlinePcNumber) }];
   });
+  const pcNumberForGuestSlot = (slotIndex: number) =>
+    guestSlots.slice(0, slotIndex + 1).filter((slot) => slot.kind === "bot").length;
   const hasOpenSeats = enabledGuests.some((slot) => slot.kind === "open");
 
   const updateGuestSlot = (index: number, nextSlot: OnlineGuestSlot) => {
@@ -1327,7 +1332,7 @@ function OnlineCreateGameScreen({
 
   return (
     <OnlineFrame title="Create an online game" onBack={onBack}>
-      <p className="setup-copy online-intro-copy">Fill each seat with a friend, an open invite, or a bot.</p>
+      <p className="setup-copy online-intro-copy">Player 2 is always human. Optional seats can be players or PCs.</p>
       {error ? <p className="setup-warning" role="alert">{error}</p> : null}
       <div className="online-stack">
         <section className="online-card create-game-card">
@@ -1337,7 +1342,7 @@ function OnlineCreateGameScreen({
               <span>You - Host</span>
             </article>
             {guestSlots.map((slot, index) => (
-              <article className={`create-slot is-${slot.kind}`} key={index}>
+              <article className={`create-slot is-${slot.kind} ${index === 0 ? "is-required-player" : ""}`} key={index}>
                 {slot.kind !== "disabled" ? (
                   <>
                     <div className="create-slot-content">
@@ -1345,18 +1350,18 @@ function OnlineCreateGameScreen({
                         {slot.kind === "friend"
                           ? slot.profile.display_name
                           : slot.kind === "bot"
-                            ? botDisplayName(slot.difficulty, index + 1)
+                            ? botDisplayName(slot.difficulty, pcNumberForGuestSlot(index))
                             : "Open seat"}
                       </strong>
                       <span>
                         {slot.kind === "friend"
                           ? "Invited friend"
                           : slot.kind === "bot"
-                            ? `${slot.difficulty} bot`
+                            ? `${slot.difficulty} PC`
                             : index === 0 ? "Second player" : `Player ${index + 2}`}
                       </span>
                     </div>
-                    <div className="seat-type-switch online-seat-switch" role="group" aria-label={`Player ${index + 2} type`}>
+                    <div className={`seat-type-switch online-seat-switch ${index === 0 ? "is-player-only" : ""}`} role="group" aria-label={`Player ${index + 2} type`}>
                       <button
                         aria-pressed={slot.kind === "open" || slot.kind === "friend"}
                         className={slot.kind === "open" || slot.kind === "friend" ? "is-active" : ""}
@@ -1365,6 +1370,7 @@ function OnlineCreateGameScreen({
                       >
                         Player
                       </button>
+                      {index > 0 ? (
                       <button
                         aria-pressed={slot.kind === "bot"}
                         className={slot.kind === "bot" ? "is-active" : ""}
@@ -1374,8 +1380,9 @@ function OnlineCreateGameScreen({
                           difficulty: slot.kind === "bot" ? slot.difficulty : "medium"
                         })}
                       >
-                        Bot
+                        PC
                       </button>
+                      ) : null}
                     </div>
                     {slot.kind === "bot" ? (
                       <BotDifficultySelector
@@ -1384,8 +1391,13 @@ function OnlineCreateGameScreen({
                       />
                     ) : null}
                     {index > 0 ? (
-                      <button className="create-slot-remove" type="button" onClick={() => removeGuestSlot(index)}>
-                        Remove
+                      <button
+                        aria-label={`Remove Player ${index + 2} seat`}
+                        className="create-slot-remove"
+                        type="button"
+                        onClick={() => removeGuestSlot(index)}
+                      >
+                        &times;
                       </button>
                     ) : null}
                   </>
@@ -1400,7 +1412,7 @@ function OnlineCreateGameScreen({
           </div>
           <div className="create-game-summary" aria-live="polite">
             <strong>{playerCount}-player game</strong>
-            <span>{botSeats.length > 0 ? `${botSeats.length} bot${botSeats.length === 1 ? "" : "s"}` : "All human"}</span>
+            <span>{botSeats.length > 0 ? `${botSeats.length} PC${botSeats.length === 1 ? "" : "s"}` : "All human"}</span>
             <span>{hasOpenSeats ? "Open lobby" : "Private lobby"}</span>
           </div>
           <button
@@ -1525,7 +1537,7 @@ function currentRoomStatusLabel(status: ReturnType<typeof currentRoomStatus>): s
   }
 
   if (status === "bot-turn") {
-    return "Bot turn";
+    return "PC turn";
   }
 
   if (status === "waiting") {
@@ -1586,7 +1598,7 @@ function currentRoomDetail(summary: CurrentRoomSummary, profileId: string): stri
 
   if (status === "bot-turn") {
     const bot = activeRoomBot(summary.bots, summary.room.game_state);
-    return bot ? `${bot.display_name} is playing${turnNumber ? ` - turn ${turnNumber}` : ""}` : "A bot is playing";
+    return bot ? `${bot.display_name} is playing${turnNumber ? ` - turn ${turnNumber}` : ""}` : "A PC is playing";
   }
 
   const activeProfileId = summary.room.turn_profile_id;
@@ -1918,7 +1930,7 @@ function OnlineRoomSession({
             return;
           }
 
-          setError("The room changed while the bot was thinking. Refreshed the board.");
+          setError("The room changed while the PC was thinking. Refreshed the board.");
           await refreshRoom();
         })
         .catch(async (caughtError: unknown) => {
@@ -2000,7 +2012,7 @@ function OnlineRoomSession({
                   <article className={`online-list-item ${bot ? "is-bot-seat" : pendingInvite ? "is-pending-invite" : ""}`} key={seatIndex}>
                     <div>
                       <strong>{player?.profile.display_name ?? bot?.display_name ?? pendingInvite?.recipient.display_name ?? `Seat ${seatIndex + 1}`}</strong>
-                      <span>{player ? playerIdForUiSeat(seatIndex) : bot ? `${bot.difficulty[0].toUpperCase()}${bot.difficulty.slice(1)} bot - ${playerIdForUiSeat(seatIndex)}` : pendingInvite ? "Invited" : "Waiting"}</span>
+                      <span>{player ? playerIdForUiSeat(seatIndex) : bot ? `${bot.difficulty[0].toUpperCase()}${bot.difficulty.slice(1)} PC - ${playerIdForUiSeat(seatIndex)}` : pendingInvite ? "Invited" : "Waiting"}</span>
                     </div>
                   </article>
                 );
@@ -2173,8 +2185,13 @@ function LocalSetupScreen({
 
   const startConfiguredGame = () => {
     const playerControllers = seatControllers.slice(0, playerCount);
+    let pcNumber = 0;
     const playerNames = playerControllers.map((controller, index) => {
-      return controller.kind === "bot" ? botDisplayName(controller.difficulty, index) : `Player ${index + 1}`;
+      if (controller.kind === "bot") {
+        pcNumber += 1;
+        return botDisplayName(controller.difficulty, pcNumber);
+      }
+      return `Player ${index + 1}`;
     });
 
     onStart({ playerCount, tabletopMode, playerNames, playerControllers });
@@ -2218,8 +2235,8 @@ function LocalSetupScreen({
             >
               <div className="seat-card-heading">
                 <div>
-                  <strong>{controller.kind === "bot" ? botDisplayName(controller.difficulty, seatIndex) : `Player ${seatIndex + 1}`}</strong>
-                  <span>{seatIndex === 0 ? "You" : controller.kind === "bot" ? "Computer player" : "Pass and play"}</span>
+                  <strong>{controller.kind === "bot" ? botDisplayName(controller.difficulty, activeControllers.slice(0, seatIndex + 1).filter((candidate) => candidate.kind === "bot").length) : `Player ${seatIndex + 1}`}</strong>
+                  <span>{seatIndex === 0 ? "You" : controller.kind === "bot" ? "Computer" : "Pass and play"}</span>
                 </div>
                 <span className="seat-number">P{seatIndex + 1}</span>
               </div>
@@ -2244,7 +2261,7 @@ function LocalSetupScreen({
                         difficulty: controller.kind === "bot" ? controller.difficulty : "medium"
                       })}
                     >
-                      Bot
+                      PC
                     </button>
                   </div>
                   {controller.kind === "bot" ? (
@@ -2275,7 +2292,7 @@ function LocalSetupScreen({
         {tabletopUnavailable ? (
           <p className="setup-warning" role="status">
             {hasBots
-              ? "Tabletop mode is available for all-human games. Bots play in the standard layout."
+              ? "Tabletop mode is available for all-human games. PCs play in the standard layout."
               : "This screen is too small for tabletop mode with three or four players."}
           </p>
         ) : null}
@@ -2301,7 +2318,7 @@ function BotDifficultySelector({
   onChange: (difficulty: BotDifficulty) => void;
 }): ReactElement {
   return (
-    <div className="difficulty-selector" role="group" aria-label="Bot difficulty">
+    <div className="difficulty-selector" role="group" aria-label="PC difficulty">
       {BOT_DIFFICULTIES.map((difficulty) => (
         <button
           aria-pressed={value === difficulty}
@@ -2385,11 +2402,15 @@ function GameScreen({
   } | null>(null);
   const suppressNextClick = useRef(false);
   const activePlayer = currentPlayer(game);
+  const isBotTurn = activePlayer.controller?.kind === "bot";
+  const localHumanPlayers = game.players.filter((player) => player.controller?.kind !== "bot");
   const pinnedTrayPlayer = onlinePlayerId
     ? game.players.find((player) => player.id === onlinePlayerId) ?? activePlayer
-    : activePlayer;
+    : isBotTurn
+      ? localHumanPlayers[0] ?? activePlayer
+      : activePlayer;
   const actionCountLabel = `${game.actionCredits} action${game.actionCredits === 1 ? "" : "s"}`;
-  const isBotTurn = activePlayer.controller?.kind === "bot";
+  const isSoloHumanGame = !showOnlinePlayerNames && localHumanPlayers.length === 1;
   const onlineWaitingTurnLabel = showOnlinePlayerNames && onlinePlayerId && activePlayer.id !== onlinePlayerId
     ? `${activePlayer.name}'s turn`
     : null;
@@ -2713,9 +2734,9 @@ function GameScreen({
       setOpenRerollValue(null);
       setHasExplicitRerollSelection(false);
       clearStackLongPress();
-      setTurnPromptOpen(!game.tabletopMode && !suppressTurnPrompt && !isBotTurn);
+      setTurnPromptOpen(!game.tabletopMode && !suppressTurnPrompt && !isBotTurn && !isSoloHumanGame);
     }
-  }, [game.seed, game.turnNumber, game.currentPlayerIndex, game.phase, game.tabletopMode, suppressTurnPrompt, isBotTurn]);
+  }, [game.seed, game.turnNumber, game.currentPlayerIndex, game.phase, game.tabletopMode, suppressTurnPrompt, isBotTurn, isSoloHumanGame]);
 
   useEffect(() => {
     if (suppressTurnPrompt) {
@@ -3344,7 +3365,7 @@ function GameScreen({
 
   return (
     <main
-      className={`game-shell ${game.tabletopMode ? "is-tabletop" : ""} ${
+      className={`game-shell ${game.tabletopMode ? "is-tabletop" : ""} ${isBotTurn ? "is-pc-turn" : ""} ${
         compactTrayLayout ? "has-compact-trays" : ""
       }`}
       ref={shellRef}
@@ -3420,7 +3441,7 @@ function GameScreen({
         </>
       ) : null}
 
-      {turnPromptOpen && game.phase === "playing" && !isBotTurn && !game.tabletopMode && !suppressTurnPrompt ? (
+      {turnPromptOpen && game.phase === "playing" && !isBotTurn && !game.tabletopMode && !suppressTurnPrompt && !isSoloHumanGame ? (
         <TurnStartPrompt player={activePlayer} playerNumber={activePlayerNumber} onPlay={() => setTurnPromptOpen(false)} />
       ) : null}
 

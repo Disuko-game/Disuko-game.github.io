@@ -2814,3 +2814,107 @@ select:focus-visible {
     width: 100%;
   }
 }
+
+/* Focused setup and PC-turn refinements */
+.local-setup-screen {
+  display: grid;
+  place-items: start center;
+  overflow-x: hidden;
+  overflow-y: auto;
+  padding-top: max(0.65rem, env(safe-area-inset-top));
+}
+
+.local-setup-panel {
+  margin: 0 auto;
+}
+
+.local-setup-panel > .setup-logo {
+  width: min(48%, 10rem);
+  margin-bottom: 0.4rem;
+}
+
+.seat-number {
+  width: 2.15rem;
+  height: 2.15rem;
+  min-width: 2.15rem;
+  min-height: 2.15rem;
+  align-items: center;
+  justify-items: center;
+  line-height: 1;
+  padding: 0;
+  text-align: center;
+}
+
+.online-seat-switch.is-player-only {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.create-slot.is-required-player {
+  border-color: color-mix(in srgb, var(--blue), #fff6c8 22%);
+}
+
+.create-slot-remove {
+  top: 0.42rem;
+  right: 0.42rem;
+  bottom: auto;
+  z-index: 2;
+  display: grid;
+  width: 2.1rem;
+  min-width: 2.1rem;
+  height: 2.1rem;
+  min-height: 2.1rem;
+  place-items: center;
+  border-color: rgba(255, 188, 166, 0.72);
+  background: linear-gradient(180deg, #db4b35, #8f2017);
+  color: #fff8ee;
+  font-size: 1.38rem;
+  line-height: 1;
+  padding: 0 0 0.1rem;
+}
+
+.create-slot-remove:hover {
+  filter: brightness(1.12);
+}
+
+.board-cell > .die-face {
+  animation: dieLand 420ms cubic-bezier(0.18, 0.9, 0.3, 1.2) both;
+}
+
+.game-shell.is-pc-turn .game-status-pill {
+  animation: pcThinkingPulse 1.15s ease-in-out infinite;
+}
+
+.game-shell.is-pc-turn .die-face.is-recent-move {
+  animation: pcMoveEmphasis 620ms cubic-bezier(0.18, 0.9, 0.3, 1.18) both;
+}
+
+@keyframes dieLand {
+  from {
+    opacity: 0;
+    transform: translateY(-0.7rem) scale(0.72) rotate(-7deg);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1) rotate(0);
+  }
+}
+
+@keyframes pcThinkingPulse {
+  0%,
+  100% { filter: brightness(0.94); transform: scale(0.98); }
+  50% { filter: brightness(1.16); transform: scale(1.02); }
+}
+
+@keyframes pcMoveEmphasis {
+  0% { transform: scale(0.7) rotate(-8deg); }
+  68% { transform: scale(1.12) rotate(2deg); }
+  100% { transform: scale(1) rotate(0); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .board-cell > .die-face,
+  .game-shell.is-pc-turn .game-status-pill,
+  .game-shell.is-pc-turn .die-face.is-recent-move {
+    animation: none;
+  }
+}
