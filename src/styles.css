@@ -2891,10 +2891,6 @@ select:focus-visible {
   animation: pcThinkingPulse 1.15s ease-in-out infinite;
 }
 
-.game-shell.is-pc-turn .die-face.is-recent-move {
-  animation: pcMoveEmphasis 620ms cubic-bezier(0.18, 0.9, 0.3, 1.18) both;
-}
-
 .bot-drag-preview {
   position: fixed;
   z-index: 24;
@@ -2940,16 +2936,9 @@ select:focus-visible {
   50% { filter: brightness(1.16); transform: scale(1.02); }
 }
 
-@keyframes pcMoveEmphasis {
-  0% { transform: scale(0.7) rotate(-8deg); }
-  68% { transform: scale(1.12) rotate(2deg); }
-  100% { transform: scale(1) rotate(0); }
-}
-
 @media (prefers-reduced-motion: reduce) {
   .board-cell > .die-face,
-  .game-shell.is-pc-turn .game-status-pill,
-  .game-shell.is-pc-turn .die-face.is-recent-move {
+  .game-shell.is-pc-turn .game-status-pill {
     animation: none;
   }
 }

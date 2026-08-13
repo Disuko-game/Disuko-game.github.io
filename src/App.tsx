@@ -24,6 +24,7 @@ import {
   newGame,
   offBoardDice,
   placeDie,
+  recentBoardChangesForCurrentTurn,
   rerollDice,
   restoreGame,
   selectDie,
@@ -191,6 +192,11 @@ interface BotDragAnimation {
   to: ScreenPoint;
   size: number;
 }
+interface RenderedDiePosition {
+  center: ScreenPoint;
+  size: number;
+}
+
 
 function centerOfElement(element: HTMLElement): ScreenPoint {
   const rect = element.getBoundingClientRect();
@@ -2384,6 +2390,7 @@ function GameScreen({
   const completionRewardId = useRef(0);
   const completionRewardActive = useRef(false);
   const previousGameForBotDrag = useRef<GameState>(game);
+  const renderedDiePositionsForBotDrag = useRef(new Map<string, RenderedDiePosition>());
   const botDragAnimationId = useRef(0);
   const botDragAnimationTimer = useRef<number | null>(null);
   const completionRewardQueue = useRef<QueuedCompletionReward[]>([]);
@@ -2451,9 +2458,7 @@ function GameScreen({
     const playerColors = new Map(game.players.map((player) => [player.id, player.color]));
     const highlights = new Map<string, PlayerColor>();
 
-    (game.boardChanges ?? []).filter((change) => {
-      return change.playerId === activePlayer.id && change.turnNumber === game.turnNumber;
-    }).forEach((change) => {
+    recentBoardChangesForCurrentTurn(game).forEach((change) => {
       const color = playerColors.get(change.playerId);
 
       if (color) {
@@ -2479,9 +2484,8 @@ function GameScreen({
 
     if (
       previousGame === game ||
-      game.phase !== "playing" ||
       !action?.dieId ||
-      action.type !== "move" ||
+      (action.type !== "move" && action.type !== "place") ||
       bot?.controller.kind !== "bot"
     ) {
       return;
@@ -2491,18 +2495,18 @@ function GameScreen({
     const after = game.dice.find((die) => die.id === action.dieId);
     const shell = shellRef.current;
 
-    if (!shell || !before || !after || !isOnBoard(before) || !isOnBoard(after)) {
+    if (!shell || !before || !after || !isOnBoard(after)) {
       return;
     }
 
-    const fromCell = shell.querySelector<HTMLElement>(
-      ".board-cell[data-row='" + before.row + "'][data-col='" + before.col + "']"
-    );
     const toCell = shell.querySelector<HTMLElement>(
       ".board-cell[data-row='" + after.row + "'][data-col='" + after.col + "']"
     );
+    const previousPositions = renderedDiePositionsForBotDrag.current;
+    const fromPosition = previousPositions.get(before.id)
+      ?? previousPositions.get("tray:" + before.ownerId + ":" + before.value);
 
-    if (!fromCell || !toCell) {
+    if (!fromPosition || !toCell) {
       return;
     }
 
@@ -2516,19 +2520,52 @@ function GameScreen({
 
     botDragAnimationId.current += 1;
     const id = botDragAnimationId.current;
-    const sourceRect = fromCell.getBoundingClientRect();
     setBotDragAnimation({
       id,
       die: after,
-      from: centerOfElement(fromCell),
+      from: fromPosition.center,
       to: centerOfElement(toCell),
-      size: Math.min(sourceRect.width, sourceRect.height) * 0.82
+      size: fromPosition.size
     });
     botDragAnimationTimer.current = window.setTimeout(() => {
       setBotDragAnimation((current) => (current?.id === id ? null : current));
       botDragAnimationTimer.current = null;
     }, 620);
   }, [game]);
+  useLayoutEffect(() => {
+    const shell = shellRef.current;
+
+    if (!shell) {
+      return;
+    }
+
+    const nextPositions = new Map<string, RenderedDiePosition>();
+    shell.querySelectorAll<HTMLElement>("[data-die-id]").forEach((element) => {
+      if (element.closest(".bot-drag-preview, .drag-preview, .invalid-return-preview")) {
+        return;
+      }
+
+      const dieId = element.dataset.dieId;
+      const die = dieId ? game.dice.find((candidate) => candidate.id === dieId) : undefined;
+
+      if (!die) {
+        return;
+      }
+
+      const rect = element.getBoundingClientRect();
+      const position = {
+        center: centerOfElement(element),
+        size: Math.min(rect.width, rect.height)
+      };
+      nextPositions.set(die.id, position);
+
+      if (!isOnBoard(die)) {
+        nextPositions.set("tray:" + die.ownerId + ":" + die.value, position);
+      }
+    });
+    renderedDiePositionsForBotDrag.current = nextPositions;
+  }, [game, compactTrayLayout]);
+
 
   useEffect(() => {
     return () => {
