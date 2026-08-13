@@ -264,7 +264,7 @@ function chooseChallenge(
 
 function chooseHardAction(state: GameState, actions: BotAction[]): BotAction {
   const rootPlayerId = currentPlayer(state).id;
-  const rootCandidates = rankedActionsForActor(state, actions, rootPlayerId, HARD_ROOT_PREFILTER).slice(
+  const rootCandidates = rankedActionsForActor(state, actions, rootPlayerId, HARD_ROOT_PREFILTER, true).slice(
     0,
     HARD_ROOT_BEAM
   );
@@ -272,7 +272,7 @@ function chooseHardAction(state: GameState, actions: BotAction[]): BotAction {
     if (usesFutureGameRandomness(state, action)) {
       return {
         action,
-        score: expectedStochasticScore(state, action, rootPlayerId, HARD_STOCHASTIC_SAMPLES)
+        score: expectedStochasticScore(state, action, rootPlayerId, HARD_STOCHASTIC_SAMPLES, true)
       };
     }
 
@@ -304,7 +304,7 @@ function hardSearch(
   }
 
   if (handoffsRemaining < 0 || actionDepth >= HARD_ACTION_DEPTH || budget.remaining <= 0) {
-    return evaluateState(state, rootPlayerId);
+    return evaluateHardState(state, rootPlayerId);
   }
 
   budget.remaining -= 1;
@@ -314,11 +314,12 @@ function hardSearch(
     state,
     strategicActions(state, legal),
     actorId,
-    HARD_NODE_PREFILTER
+    HARD_NODE_PREFILTER,
+    true
   ).slice(0, HARD_NODE_BEAM);
 
   if (candidates.length === 0) {
-    return evaluateState(state, rootPlayerId);
+    return evaluateHardState(state, rootPlayerId);
   }
 
   const maximizing = actorId === rootPlayerId;
@@ -328,7 +329,7 @@ function hardSearch(
     let score: number;
 
     if (usesFutureGameRandomness(state, action)) {
-      score = expectedStochasticScore(state, action, rootPlayerId, HARD_STOCHASTIC_SAMPLES);
+      score = expectedStochasticScore(state, action, rootPlayerId, HARD_STOCHASTIC_SAMPLES, true);
     } else {
       const next = applyBotAction(state, action);
       const changedPlayer = next.phase === "playing" && currentPlayer(next).id !== actorId;
@@ -343,17 +344,21 @@ function hardSearch(
     }
   }
 
-  return Number.isFinite(bestScore) ? bestScore : evaluateState(state, rootPlayerId);
+  return Number.isFinite(bestScore) ? bestScore : evaluateHardState(state, rootPlayerId);
 }
 
 function rankedActionsForActor(
   state: GameState,
   actions: BotAction[],
   actorId: string,
-  prefilterLimit: number
+  prefilterLimit: number,
+  preserveLastValues = false
 ): BotAction[] {
   return fastActionShortlist(state, actions, actorId, prefilterLimit)
-    .map((action) => ({ action, score: mediumActionScore(state, action, actorId) }))
+    .map((action) => ({
+      action,
+      score: preserveLastValues ? hardActionScore(state, action, actorId) : mediumActionScore(state, action, actorId)
+    }))
     .sort((left, right) => right.score - left.score || actionKey(left.action).localeCompare(actionKey(right.action)))
     .map(({ action }) => action);
 }
@@ -493,18 +498,26 @@ function fastCompletionCount(
 }
 function mediumActionScore(state: GameState, action: BotAction, rootPlayerId: string): number {
   if (usesFutureGameRandomness(state, action)) {
-    return expectedStochasticScore(state, action, rootPlayerId, MEDIUM_STOCHASTIC_SAMPLES);
+    return expectedStochasticScore(state, action, rootPlayerId, MEDIUM_STOCHASTIC_SAMPLES, true);
   }
 
   const next = applyBotAction(state, action);
-  return evaluateState(next, rootPlayerId) + immediateActionValue(state, next, action, rootPlayerId);
+  return actionEvaluation(state, next, action, rootPlayerId, true);
+}
+
+function hardActionScore(state: GameState, action: BotAction, rootPlayerId: string): number {
+  if (usesFutureGameRandomness(state, action)) {
+    return expectedStochasticScore(state, action, rootPlayerId, HARD_STOCHASTIC_SAMPLES, true);
+  }
+  return actionEvaluation(state, applyBotAction(state, action), action, rootPlayerId, true);
 }
 
 function expectedStochasticScore(
   state: GameState,
   action: BotAction,
   rootPlayerId: string,
-  sampleCount: number
+  sampleCount: number,
+  preserveLastValues = false
 ): number {
   let total = 0;
 
@@ -516,10 +529,21 @@ function expectedStochasticScore(
     // predict the persisted reroll/challenge result.
     simulated.rngState = seedToState(`${decisionSignature(state)}|chance:${sample}`);
     const next = applyBotAction(simulated, action);
-    total += evaluateState(next, rootPlayerId) + immediateActionValue(simulated, next, action, rootPlayerId);
+    total += actionEvaluation(simulated, next, action, rootPlayerId, preserveLastValues);
   }
 
   return total / sampleCount;
+}
+
+function actionEvaluation(before: GameState, after: GameState, action: BotAction, rootPlayerId: string, preserveLastValues: boolean): number {
+  const baseScore = preserveLastValues ? evaluateHardState(after, rootPlayerId) : evaluateState(after, rootPlayerId);
+  const nextPlayerId = after.phase === "playing" && currentPlayer(after).id !== rootPlayerId
+    ? currentPlayer(after).id
+    : undefined;
+  const newlyCreatedThreat = nextPlayerId
+    ? Math.max(0, completionThreatScore(after, nextPlayerId) - completionThreatScore(before, nextPlayerId))
+    : 0;
+  return baseScore + immediateActionValue(before, after, action, rootPlayerId) - newlyCreatedThreat;
 }
 
 function immediateActionValue(before: GameState, after: GameState, action: BotAction, playerId: string): number {
@@ -594,6 +618,45 @@ function terminalStateScore(state: GameState, rootPlayerId: string): number | nu
   }
 
   return state.winnerId === rootPlayerId ? WIN_SCORE : -WIN_SCORE;
+}
+
+function evaluateHardState(state: GameState, rootPlayerId: string): number {
+  return evaluateState(state, rootPlayerId) + (state.phase === "playing" ? hardValueReserveScore(state, rootPlayerId) : 0);
+}
+
+function hardValueReserveScore(state: GameState, playerId: string): number {
+  const counts = new Map<DiceValue, number>();
+  offBoardDice(state, playerId).forEach((die) => counts.set(die.value, (counts.get(die.value) ?? 0) + 1));
+  return DICE_VALUES.reduce((score, value) => {
+    const count = counts.get(value) ?? 0;
+    if (count === 0) return score;
+    let valueScore = HARD_VALUE_PRESENCE_BONUS;
+    if (count === 1) {
+      valueScore += HARD_LAST_VALUE_RESERVE_BONUS;
+      const placed = state.dice.filter((die) => isOnBoard(die) && die.value === value).length;
+      if (placed >= 4 && legalCellCountForValue(state, value) > 0) valueScore += HARD_NEAR_VALUE_SET_RESERVE_BONUS;
+    }
+    return score + valueScore;
+  }, 0);
+}
+
+function completionThreatScore(state: GameState, playerId: string): number {
+  const values = new Set(offBoardDice(state, playerId).map((die) => die.value));
+  if (values.size === 0) return 0;
+  const units: Array<Array<{ row: number; col: number }>> = [];
+  for (let row = 0; row < BOARD_SIZE; row += 1) units.push(Array.from({ length: BOARD_SIZE }, (_, col) => ({ row, col })));
+  for (let col = 0; col < BOARD_SIZE; col += 1) units.push(Array.from({ length: BOARD_SIZE }, (_, row) => ({ row, col })));
+  let threats = 0;
+  units.forEach((unit) => {
+    const empty = unit.filter(({ row, col }) => !getDieAt(state, row, col));
+    if (empty.length === 1 && [...values].some((value) => canPlaceValueAt(state, value, empty[0].row, empty[0].col))) threats += 1;
+  });
+  DICE_VALUES.forEach((value) => {
+    const placed = state.dice.filter((die) => isOnBoard(die) && die.value === value).length;
+    if (values.has(value) && placed === 5 && legalCellCountForValue(state, value) > 0) threats += 1;
+  });
+  return threats * NEXT_PLAYER_COMPLETION_THREAT_PENALTY
+    + (remainingDiceCount(state, playerId) === 1 && threats > 0 ? NEXT_PLAYER_WIN_THREAT_PENALTY : 0);
 }
 
 function completionOpportunityScore(state: GameState, playerId: string): number {
@@ -898,3 +961,9 @@ function boardCells(): Array<{ row: number; col: number }> {
 
   return cells;
 }
+const NEXT_PLAYER_COMPLETION_THREAT_PENALTY = 18_000;
+const ADDITIONAL_COMPLETION_THREAT_PENALTY = 14_000;
+const NEXT_PLAYER_WIN_THREAT_PENALTY = 90_000;
+const HARD_VALUE_PRESENCE_BONUS = 700;
+const HARD_LAST_VALUE_RESERVE_BONUS = 2_400;
+const HARD_NEAR_VALUE_SET_RESERVE_BONUS = 1_200;

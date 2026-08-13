@@ -24,7 +24,6 @@ import {
   newGame,
   offBoardDice,
   placeDie,
-  recentBoardChangesForCurrentTurn,
   rerollDice,
   restoreGame,
   selectDie,
@@ -183,6 +182,14 @@ interface ViewportSize {
 interface ScreenPoint {
   x: number;
   y: number;
+}
+
+interface BotDragAnimation {
+  id: number;
+  die: Die;
+  from: ScreenPoint;
+  to: ScreenPoint;
+  size: number;
 }
 
 function centerOfElement(element: HTMLElement): ScreenPoint {
@@ -609,7 +616,7 @@ export default function App(): ReactElement {
         game={game}
         onCommit={setGame}
         onOpenMenu={() => setShowMenu(true)}
-        onNewGame={() => setView("home")}
+        onNewGame={() => setView("local-setup")}
         newGameLabel="Home"
       >
         {showMenu && !game.tabletopMode ? (
@@ -2363,6 +2370,7 @@ function GameScreen({
   const [completionReward, setCompletionReward] = useState<CompletionReward | null>(null);
   const [winnerCelebration, setWinnerCelebration] = useState<WinnerCelebrationLayout | null>(null);
   const [turnPromptOpen, setTurnPromptOpen] = useState(false);
+  const [botDragAnimation, setBotDragAnimation] = useState<BotDragAnimation | null>(null);
   const [compactTrayLayout, setCompactTrayLayout] = useState(() => {
     const viewport = getViewportSize();
 
@@ -2375,6 +2383,9 @@ function GameScreen({
   const conflictBlockerHighlightTimer = useRef<number | null>(null);
   const completionRewardId = useRef(0);
   const completionRewardActive = useRef(false);
+  const previousGameForBotDrag = useRef<GameState>(game);
+  const botDragAnimationId = useRef(0);
+  const botDragAnimationTimer = useRef<number | null>(null);
   const completionRewardQueue = useRef<QueuedCompletionReward[]>([]);
   const completionRewardSignature = useRef<string | null>(completionActionSignature(game));
   const trackedTurn = useRef<TrackedTurn>({
@@ -2440,7 +2451,9 @@ function GameScreen({
     const playerColors = new Map(game.players.map((player) => [player.id, player.color]));
     const highlights = new Map<string, PlayerColor>();
 
-    recentBoardChangesForCurrentTurn(game).forEach((change) => {
+    (game.boardChanges ?? []).filter((change) => {
+      return change.playerId === activePlayer.id && change.turnNumber === game.turnNumber;
+    }).forEach((change) => {
       const color = playerColors.get(change.playerId);
 
       if (color) {
@@ -2459,6 +2472,67 @@ function GameScreen({
   const transientDieId = dragPreview?.die.id ?? invalidMovePreview?.die.id ?? null;
 
   useLayoutEffect(() => {
+  useLayoutEffect(() => {
+    const previousGame = previousGameForBotDrag.current;
+    previousGameForBotDrag.current = game;
+    const action = game.lastAction;
+    const bot = action ? game.players.find((player) => player.id === action.playerId) : undefined;
+
+    if (!action?.dieId || action.type !== "move" || bot?.controller.kind !== "bot") {
+      return;
+    }
+
+    const before = previousGame.dice.find((die) => die.id === action.dieId);
+    const after = game.dice.find((die) => die.id === action.dieId);
+    const shell = shellRef.current;
+
+    if (!shell || !before || !after || !isOnBoard(before) || !isOnBoard(after)) {
+      return;
+    }
+
+    const fromCell = shell.querySelector<HTMLElement>(
+      ".board-cell[data-row='" + before.row + "'][data-col='" + before.col + "']"
+    );
+    const toCell = shell.querySelector<HTMLElement>(
+      ".board-cell[data-row='" + after.row + "'][data-col='" + after.col + "']"
+    );
+
+    if (!fromCell || !toCell) {
+      return;
+    }
+
+    if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
+      return;
+    }
+
+    if (botDragAnimationTimer.current) {
+      window.clearTimeout(botDragAnimationTimer.current);
+    }
+
+    botDragAnimationId.current += 1;
+    const id = botDragAnimationId.current;
+    const sourceRect = fromCell.getBoundingClientRect();
+    setBotDragAnimation({
+      id,
+      die: after,
+      from: centerOfElement(fromCell),
+      to: centerOfElement(toCell),
+      size: Math.min(sourceRect.width, sourceRect.height) * 0.82
+    });
+    botDragAnimationTimer.current = window.setTimeout(() => {
+      setBotDragAnimation((current) => (current?.id === id ? null : current));
+      botDragAnimationTimer.current = null;
+    }, 620);
+  }, [game]);
+
+  useEffect(() => {
+    return () => {
+      if (botDragAnimationTimer.current) {
+        window.clearTimeout(botDragAnimationTimer.current);
+      }
+    };
+  }, []);
+
     if (game.tabletopMode || game.players.length < 3) {
       setCompactTrayLayout(false);
       return;
@@ -3295,6 +3369,7 @@ function GameScreen({
       conflictCells={conflictCells}
       recentMoveHighlights={recentMoveHighlights}
       draggingDieId={transientDieId}
+      botDraggingDieId={botDragAnimation?.die.id ?? null}
       completionReward={completionRewardOverlay}
       conflictBlockerHighlight={conflictBlockerHighlight}
       tabletopMode={game.tabletopMode}
@@ -3413,6 +3488,25 @@ function GameScreen({
       )}
 
       {game.tabletopMode ? <TabletopPlayArea game={game} board={board} renderTray={renderPlayerTray} /> : null}
+
+      {botDragAnimation ? (
+        <div
+          className="bot-drag-preview"
+          style={
+            {
+              left: botDragAnimation.from.x,
+              top: botDragAnimation.from.y,
+              width: botDragAnimation.size,
+              height: botDragAnimation.size,
+              "--bot-drag-x": String(botDragAnimation.to.x - botDragAnimation.from.x) + "px",
+              "--bot-drag-y": String(botDragAnimation.to.y - botDragAnimation.from.y) + "px"
+            } as CSSProperties
+          }
+          aria-hidden="true"
+        >
+          <DieFace die={botDragAnimation.die} />
+        </div>
+      ) : null}
 
       {dragPreview ? (
         <div className="drag-preview" style={{ left: dragPreview.x, top: dragPreview.y }} aria-hidden="true">
@@ -3788,6 +3882,7 @@ function Board({
   conflictCells,
   recentMoveHighlights,
   draggingDieId,
+  botDraggingDieId,
   completionReward,
   conflictBlockerHighlight,
   tabletopMode = false,
@@ -3805,6 +3900,7 @@ function Board({
   conflictCells: Set<string>;
   recentMoveHighlights: Map<string, PlayerColor>;
   draggingDieId: string | null;
+  botDraggingDieId: string | null;
   completionReward: BoardCompletionReward | null;
   conflictBlockerHighlight: ConflictBlockerHighlight | null;
   tabletopMode?: boolean;
@@ -3837,7 +3933,7 @@ function Board({
         {boardIndexes.map(({ row, col }) => {
           const die = getDieAt(game, row, col);
           const recentMoveColor = die ? recentMoveHighlights.get(die.id) : undefined;
-          const moveLocked = Boolean(die && game.actionCredits > 1 && wasDieMovedThisTurn(game, die.id));
+          const moveLocked = Boolean(die && wasDieMovedThisTurn(game, die.id));
           const key = `${row}:${col}`;
           const cellClasses = [
             "board-cell",
@@ -3869,7 +3965,7 @@ function Board({
                   conflicted={conflictDice.has(die.id)}
                   recentMoveColor={recentMoveColor}
                   moveLocked={moveLocked}
-                  draggingSource={draggingDieId === die.id}
+                  draggingSource={draggingDieId === die.id || botDraggingDieId === die.id}
                   onClick={canInteract ? () => onDie(die) : undefined}
                   onPointerDown={canInteract ? (event) => onDiePointerDown(event, die) : undefined}
                   onPointerMove={canInteract ? onDiePointerMove : undefined}
