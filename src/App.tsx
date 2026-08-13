@@ -2472,13 +2472,18 @@ function GameScreen({
   const transientDieId = dragPreview?.die.id ?? invalidMovePreview?.die.id ?? null;
 
   useLayoutEffect(() => {
-  useLayoutEffect(() => {
     const previousGame = previousGameForBotDrag.current;
     previousGameForBotDrag.current = game;
     const action = game.lastAction;
     const bot = action ? game.players.find((player) => player.id === action.playerId) : undefined;
 
-    if (!action?.dieId || action.type !== "move" || bot?.controller.kind !== "bot") {
+    if (
+      previousGame === game ||
+      game.phase !== "playing" ||
+      !action?.dieId ||
+      action.type !== "move" ||
+      bot?.controller.kind !== "bot"
+    ) {
       return;
     }
 
@@ -2533,6 +2538,7 @@ function GameScreen({
     };
   }, []);
 
+  useLayoutEffect(() => {
     if (game.tabletopMode || game.players.length < 3) {
       setCompactTrayLayout(false);
       return;
