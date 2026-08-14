@@ -221,8 +221,13 @@ p {
   margin-top: 1rem;
 }
 
+.home-screen {
+  place-items: start center;
+}
+
 .home-panel {
   width: min(100%, 34rem);
+  margin-block: auto;
 }
 
 .home-action-grid {
@@ -1523,7 +1528,7 @@ p {
   place-items: center;
   background: rgba(20, 8, 3, 0.62);
   padding: 1rem;
-  z-index: 10;
+  z-index: 100;
 }
 
 .drag-preview {
@@ -2927,6 +2932,45 @@ select:focus-visible {
 .home-action-button.is-friends,
 .home-action-button.is-settings {
   min-height: 4.6rem;
+}
+
+@media (max-width: 28rem), (max-height: 48rem) {
+  .home-screen {
+    padding: max(0.65rem, env(safe-area-inset-top)) 0.65rem max(0.65rem, env(safe-area-inset-bottom));
+  }
+
+  .home-panel {
+    padding: 0.82rem;
+  }
+
+  .home-panel .setup-logo {
+    width: min(68%, 15rem);
+    margin-bottom: 0.35rem;
+  }
+
+  .home-panel h1 {
+    font-size: 1.4rem;
+  }
+
+  .home-panel .setup-copy {
+    margin-top: 0.32rem;
+    font-size: 0.88rem;
+  }
+
+  .home-action-grid {
+    gap: 0.48rem;
+    margin-top: 0.68rem;
+  }
+
+  .home-action-button.is-local,
+  .home-action-button.is-online {
+    min-height: 4.75rem;
+  }
+
+  .home-action-button.is-friends,
+  .home-action-button.is-settings {
+    min-height: 4.15rem;
+  }
 }
 
 .home-action-button:hover:not(:disabled) {

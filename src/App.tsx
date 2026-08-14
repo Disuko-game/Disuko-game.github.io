@@ -655,6 +655,10 @@ export default function App(): ReactElement {
         game={game}
         onCommit={setGame}
         onOpenMenu={() => setShowMenu(true)}
+        onHeaderAction={() => {
+          setShowMenu(false);
+          setView("home");
+        }}
         onNewGame={() => setView("local-setup")}
         newGameLabel="Home"
       >
@@ -2123,6 +2127,7 @@ function OnlineRoomSession({
       game={onlineGame}
       onCommit={handleOnlineCommit}
       onOpenMenu={() => setShowMenu(true)}
+      onHeaderAction={onExit}
       onNewGame={onExit}
       newGameLabel="Games"
       onlinePlayerId={onlinePlayerId}
@@ -2384,6 +2389,7 @@ function GameScreen({
   game,
   onCommit,
   onOpenMenu,
+  onHeaderAction,
   onNewGame,
   newGameLabel = "New",
   onlinePlayerId,
@@ -2394,6 +2400,7 @@ function GameScreen({
   game: GameState;
   onCommit: (game: GameState) => void;
   onOpenMenu: () => void;
+  onHeaderAction: () => void;
   onNewGame: () => void;
   newGameLabel?: string;
   onlinePlayerId?: string;
@@ -3147,6 +3154,11 @@ function GameScreen({
     onOpenMenu();
   };
 
+  const handleHeaderAction = () => {
+    clearInvalidMovePreview();
+    onHeaderAction();
+  };
+
   const handleNewGame = () => {
     clearInvalidMovePreview();
     onNewGame();
@@ -3710,7 +3722,7 @@ function GameScreen({
     >
       {game.tabletopMode ? (
         <header className="tabletop-tools" aria-label="Game controls">
-          <button className="new-game-chip" type="button" onClick={handleNewGame}>
+          <button className="new-game-chip" type="button" onClick={handleHeaderAction}>
             {newGameLabel}
           </button>
         </header>
@@ -3726,7 +3738,7 @@ function GameScreen({
               <img className="game-logo" src={logoUrl} alt="Disuko" />
               <span className={`game-status-pill ${isBotTurn ? "is-bot-turn" : ""}`} aria-live="polite">{gameStatusLabel}</span>
             </div>
-            <button className="new-game-chip" type="button" onClick={handleNewGame}>
+            <button className="new-game-chip" type="button" onClick={handleHeaderAction}>
               {newGameLabel}
             </button>
           </header>
