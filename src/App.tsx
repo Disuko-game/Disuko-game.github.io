@@ -4397,6 +4397,8 @@ function FloatingRerollTray({
       };
       const gap = 10;
       const margin = 10;
+      const gameHeaderRect = document.querySelector<HTMLElement>(".game-header")?.getBoundingClientRect();
+      const minimumTop = tabletopSlot ? margin : Math.max(margin, (gameHeaderRect?.bottom ?? 0) + gap);
       const opponentZone = source.closest<HTMLElement>(".opponent-tray-zone")?.getBoundingClientRect();
       const boardRect = document.querySelector<HTMLElement>(".board-wrap")?.getBoundingClientRect();
       const boardCandidate = boardRect
@@ -4434,7 +4436,7 @@ function FloatingRerollTray({
       const anchorRects = anchors.map((anchor) => anchor.getBoundingClientRect());
       const clampCandidate = (candidate: { left: number; top: number }) => ({
         left: Math.min(Math.max(candidate.left, margin), window.innerWidth - trayRect.width - margin),
-        top: Math.min(Math.max(candidate.top, margin), window.innerHeight - trayRect.height - margin)
+        top: Math.max(minimumTop, Math.min(candidate.top, window.innerHeight - trayRect.height - margin))
       });
       const overlapsDiceTray = (candidate: { left: number; top: number }) => {
         const right = candidate.left + trayRect.width;
@@ -4518,6 +4520,8 @@ function FloatingRerollTray({
   return createPortal(
     <div
       className={`floating-reroll-tray ${phase ? `is-${phase}` : "is-selecting"} ${
+        !phase && dice.length === 0 ? "is-empty" : ""
+      } ${
         tabletopSlot ? `is-tabletop tabletop-facing-${tabletopSlot}` : ""
       }`}
       ref={trayRef}
@@ -4534,13 +4538,10 @@ function FloatingRerollTray({
       }
     >
       <strong>
-        {phase ? `${playerName} is re-rolling` : "Select or drag dice here to re-roll"}
+        {phase ? `${playerName} is re-rolling` : "Select or drop dice here to re-roll"}
       </strong>
       <div className="reroll-tray-dice">
-        {dice.length === 0 ? (
-          <span className="reroll-tray-empty">Drop dice here</span>
-        ) : (
-          dice.map((die, index) => (
+        {dice.map((die, index) => (
             <button
               className="reroll-tray-die"
               data-reroll-die-id={die.id}
@@ -4563,8 +4564,7 @@ function FloatingRerollTray({
             >
               <DieFace die={die} compact />
             </button>
-          ))
-        )}
+          ))}
       </div>
     </div>,
     document.body

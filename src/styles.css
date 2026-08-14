@@ -401,6 +401,8 @@ p {
 }
 
 .game-header {
+  position: relative;
+  z-index: 70;
   display: grid;
   grid-template-columns: 2.8rem 1fr 3.2rem;
   align-items: center;
@@ -482,7 +484,10 @@ p {
   grid-template-columns: minmax(3.9rem, max-content) minmax(0, 1fr);
   align-items: center;
   gap: clamp(0.32rem, 1.8vw, 0.62rem);
+  width: min(100%, 23.2rem);
+  max-width: 100%;
   min-width: 0;
+  justify-self: end;
 }
 
 .opponent-tray-row strong {
@@ -885,7 +890,9 @@ p {
 .dice-tray {
   --tray-player-color: var(--cream-deep);
   display: grid;
+  justify-self: end;
   gap: 0;
+  width: min(100%, 21.4rem);
   min-width: 0;
 }
 
@@ -933,6 +940,19 @@ p {
   text-shadow: 0 0.1rem 0 rgba(0, 0, 0, 0.5);
 }
 
+.floating-reroll-tray.is-empty {
+  place-content: center;
+}
+
+.floating-reroll-tray.is-empty > strong {
+  max-width: 20rem;
+  font-size: clamp(1.15rem, 5vw, 1.5rem);
+  line-height: 1.2;
+}
+
+.floating-reroll-tray.is-empty .reroll-tray-dice {
+  display: none;
+}
 .reroll-tray-dice {
   display: flex;
   flex-wrap: wrap;
@@ -963,11 +983,6 @@ p {
   max-width: none;
 }
 
-.reroll-tray-empty {
-  color: rgba(255, 235, 179, 0.76);
-  font-size: 0.78rem;
-  font-weight: 850;
-}
 
 .floating-reroll-tray.is-gathering .reroll-tray-die {
   animation: rerollDieGather 520ms cubic-bezier(0.2, 0.82, 0.3, 1) both;
@@ -988,8 +1003,7 @@ p {
   pointer-events: none;
 }
 
-.floating-reroll-tray.is-returning > strong,
-.floating-reroll-tray.is-returning .reroll-tray-empty {
+.floating-reroll-tray.is-returning > strong {
   opacity: 0;
 }
 
@@ -1144,9 +1158,10 @@ p {
   display: grid;
   grid-template-columns: repeat(var(--rail-group-count, 1), minmax(0, var(--rail-slot-size)));
   align-items: center;
-  justify-content: start;
+  justify-content: end;
   justify-items: stretch;
   gap: var(--rail-gap);
+  width: min(100%, 17.6rem);
   min-height: 3.55rem;
   border: 0.08rem solid rgba(255, 226, 163, 0.18);
   border-radius: 0.8rem;
@@ -1885,8 +1900,8 @@ p {
 }
 
 .tabletop-tray-slot .dice-tray {
-  width: 100%;
-  min-width: min(100%, var(--tabletop-tray-width));
+  width: min(100%, 21.4rem);
+  min-width: 0;
 }
 
 .tabletop-tray-slot .tray-action-counter {
@@ -1895,7 +1910,7 @@ p {
 }
 
 .tabletop-tray-slot .dice-rail-groove {
-  justify-content: start;
+  justify-content: end;
   gap: clamp(0.28rem, 0.8vw, 0.48rem);
   min-height: clamp(3.65rem, 6.2vw, 4.05rem);
   overflow: hidden;
