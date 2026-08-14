@@ -70,7 +70,7 @@ function roomBots(): RoomBot[] {
   return [{
     room_id: "room-1",
     seat_index: 1,
-    difficulty: "hard",
+    difficulty: "very-easy",
     display_name: "PC 2",
     created_by_profile_id: "profile-1",
     joined_at: createdAt
@@ -137,7 +137,7 @@ describe("Disuko multiplayer mapping", () => {
     expect(playerNamesForRoom(players, 2, bots)).toEqual(["Hermione", "PC 2"]);
     expect(playerControllersForRoom(bots, 2)).toEqual([
       { kind: "human" },
-      { kind: "bot", difficulty: "hard" }
+      { kind: "bot", difficulty: "very-easy" }
     ]);
     expect(roomSeatCount(players, bots)).toBe(2);
   });

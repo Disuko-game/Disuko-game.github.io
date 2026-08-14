@@ -577,6 +577,7 @@ describe("Disuko rules engine", () => {
 
     expect(rerolled.map((die) => die.value)).toEqual([6, 2]);
     expect(unselected?.value).toBe(1);
+    expect(next.lastAction?.dieIds).toEqual([blueDice[0].id, blueDice[1].id]);
     expect(next.message).toContain("rerolled 2 dice");
   });
 
@@ -735,14 +736,14 @@ describe("Disuko rules engine", () => {
     const botGame = newGame({
       playerCount: 2,
       seed: "bot-controller-save",
-      playerControllers: [{ kind: "human" }, { kind: "bot", difficulty: "hard" }]
+      playerControllers: [{ kind: "human" }, { kind: "bot", difficulty: "very-easy" }]
     });
     const legacySave = JSON.parse(serializeGame(botGame)) as Record<string, unknown>;
     const legacyPlayers = legacySave.players as Array<Record<string, unknown>>;
 
     legacyPlayers.forEach((player) => delete player.controller);
 
-    expect(restoreGame(serializeGame(botGame)).players[1].controller).toEqual({ kind: "bot", difficulty: "hard" });
+    expect(restoreGame(serializeGame(botGame)).players[1].controller).toEqual({ kind: "bot", difficulty: "very-easy" });
     expect(restoreGame(JSON.stringify(legacySave)).players.every((player) => player.controller.kind === "human")).toBe(true);
   });
 });

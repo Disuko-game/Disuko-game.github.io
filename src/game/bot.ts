@@ -147,11 +147,20 @@ export function chooseBotAction(state: GameState, difficulty: BotDifficulty): Bo
     return { type: "pass" };
   }
 
-  if (difficulty === "easy") {
-    return chooseEasyAction(state, productiveActions);
+  if (difficulty === "very-easy") {
+    return chooseVeryEasyAction(state, productiveActions);
   }
 
   const strategic = strategicActions(state, productiveActions);
+
+  if (difficulty === "easy") {
+    return chooseHighestScoringAction(
+      state,
+      strategic,
+      (action) => classicMediumActionScore(state, action, currentPlayer(state).id),
+      "easy-choice"
+    );
+  }
 
   if (difficulty === "medium") {
     return chooseHighestScoringAction(
@@ -213,7 +222,7 @@ export function runBotTurn(
   return { state: nextState, actions };
 }
 
-function chooseEasyAction(state: GameState, actions: BotAction[]): BotAction {
+function chooseVeryEasyAction(state: GameState, actions: BotAction[]): BotAction {
   const buckets = (["place", "move", "reroll"] as const)
     .map((type) => ({
       type,
@@ -248,7 +257,7 @@ function chooseChallenge(
   difficulty: BotDifficulty,
   actions: Array<Extract<BotAction, { type: "challenge" }>>
 ): BotAction {
-  if (difficulty === "easy") {
+  if (difficulty === "very-easy") {
     return pickDeterministically(state, actions, "easy-challenge");
   }
 
@@ -496,6 +505,26 @@ function fastCompletionCount(
 
   return completions;
 }
+
+/** Original one-ply medium evaluator, before threat-delta and last-value reserve bonuses. */
+function classicMediumActionScore(state: GameState, action: BotAction, rootPlayerId: string): number {
+  if (usesFutureGameRandomness(state, action)) {
+    let total = 0;
+
+    for (let sample = 0; sample < MEDIUM_STOCHASTIC_SAMPLES; sample += 1) {
+      const simulated = cloneForEvaluation(state);
+      simulated.rngState = seedToState(`${decisionSignature(state)}|chance:${sample}`);
+      const next = applyBotAction(simulated, action);
+      total += evaluateState(next, rootPlayerId) + immediateActionValue(simulated, next, action, rootPlayerId);
+    }
+
+    return total / MEDIUM_STOCHASTIC_SAMPLES;
+  }
+
+  const next = applyBotAction(state, action);
+  return evaluateState(next, rootPlayerId) + immediateActionValue(state, next, action, rootPlayerId);
+}
+
 function mediumActionScore(state: GameState, action: BotAction, rootPlayerId: string): number {
   if (usesFutureGameRandomness(state, action)) {
     return expectedStochasticScore(state, action, rootPlayerId, MEDIUM_STOCHASTIC_SAMPLES, true);

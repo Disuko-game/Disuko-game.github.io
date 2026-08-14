@@ -274,7 +274,14 @@ export function rerollDice(
     die.value = rolled.value;
   });
 
-  return resolveAction(next, "reroll", undefined, `${player.name} rerolled ${diceToRoll.length} dice.`, previousCompletions);
+  return resolveAction(
+    next,
+    "reroll",
+    undefined,
+    `${player.name} rerolled ${diceToRoll.length} dice.`,
+    previousCompletions,
+    diceToRoll.map((die) => die.id)
+  );
 }
 
 export function challengeViolation(state: GameState, targetDieId?: string): GameState {
@@ -519,7 +526,8 @@ function resolveAction(
   type: LastActionType,
   dieId: string | undefined,
   baseMessage: string,
-  previousCompletions: Completion[]
+  previousCompletions: Completion[],
+  dieIds: string[] = []
 ): GameState {
   const player = currentPlayer(state);
   const completions = calculateCompletionKeys(state);
@@ -534,6 +542,7 @@ function resolveAction(
     type,
     playerId: player.id,
     dieId,
+    ...(dieIds.length > 0 ? { dieIds } : {}),
     completedKeys: newCompletions.map((completion) => completion.key),
     conflictDieIds: conflicts.flatMap((conflict) => conflict.dieIds)
   };

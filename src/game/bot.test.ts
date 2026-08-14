@@ -19,7 +19,7 @@ import {
 } from "./engine";
 import type { BotDifficulty, DiceValue, GameState } from "./types";
 
-const difficulties: BotDifficulty[] = ["easy", "medium", "hard"];
+const difficulties: BotDifficulty[] = ["very-easy", "easy", "medium", "hard"];
 const validBoard: DiceValue[][] = [
   [1, 2, 3, 4, 5, 6],
   [3, 4, 5, 6, 1, 2],
@@ -88,13 +88,13 @@ describe("Disuko bots", () => {
     });
   });
 
-  it("has medium and hard take a completion that preserves the turn", () => {
+  it("has easy, medium, and hard take a completion that preserves the turn", () => {
     const game = comboGame("bot-completion-choice");
     const completionDie = offBoardDice(game, "p1").find((die) => die.value === 6);
 
     expect(completionDie).toBeDefined();
 
-    (["medium", "hard"] as BotDifficulty[]).forEach((difficulty) => {
+    (["easy", "medium", "hard"] as BotDifficulty[]).forEach((difficulty) => {
       expect(chooseBotAction(game, difficulty)).toEqual({
         type: "place",
         dieId: completionDie?.id,

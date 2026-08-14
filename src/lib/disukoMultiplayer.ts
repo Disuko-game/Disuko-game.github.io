@@ -79,7 +79,7 @@ export interface GameCommitResult {
 
 const FRIEND_CODE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
 const ROOM_CODE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
-const BOT_DIFFICULTIES = new Set<BotDifficulty>(["easy", "medium", "hard"]);
+const BOT_DIFFICULTIES = new Set<BotDifficulty>(["very-easy", "easy", "medium", "hard"]);
 let anonymousUserPromise: Promise<string> | null = null;
 let realtimeSubscriptionSequence = 0;
 
@@ -171,14 +171,16 @@ function normalizeRoomBotSeats(
     }
 
     if (!BOT_DIFFICULTIES.has(botSeat.difficulty)) {
-      throw new Error("Choose an easy, medium, or hard bot.");
+      throw new Error("Choose a very easy, easy, medium, or hard bot.");
     }
 
     if (seats.has(botSeat.seatIndex)) {
       throw new Error("Each room seat can only be filled once.");
     }
 
-    const defaultName = `${botSeat.difficulty[0].toUpperCase()}${botSeat.difficulty.slice(1)} Bot`;
+    const defaultName = botSeat.difficulty === "very-easy"
+      ? "Very Easy Bot"
+      : `${botSeat.difficulty[0].toUpperCase()}${botSeat.difficulty.slice(1)} Bot`;
     seats.set(botSeat.seatIndex, {
       seatIndex: botSeat.seatIndex,
       difficulty: botSeat.difficulty,

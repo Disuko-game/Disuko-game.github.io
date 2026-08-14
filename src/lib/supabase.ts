@@ -123,7 +123,7 @@ export interface Database {
         Row: {
           room_id: string;
           seat_index: number;
-          difficulty: "easy" | "medium" | "hard";
+          difficulty: "very-easy" | "easy" | "medium" | "hard";
           display_name: string;
           created_by_profile_id: string;
           joined_at: string;
@@ -131,14 +131,14 @@ export interface Database {
         Insert: {
           room_id: string;
           seat_index: number;
-          difficulty: "easy" | "medium" | "hard";
+          difficulty: "very-easy" | "easy" | "medium" | "hard";
           display_name: string;
           created_by_profile_id: string;
           joined_at?: string;
         };
         Update: {
           seat_index?: number;
-          difficulty?: "easy" | "medium" | "hard";
+          difficulty?: "very-easy" | "easy" | "medium" | "hard";
           display_name?: string;
         };
         Relationships: [];

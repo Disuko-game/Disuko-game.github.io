@@ -8,7 +8,7 @@ export const DICE_VALUES = [1, 2, 3, 4, 5, 6] as const;
 
 export type PlayerColor = (typeof PLAYER_COLORS)[number];
 export type DiceValue = (typeof DICE_VALUES)[number];
-export type BotDifficulty = "easy" | "medium" | "hard";
+export type BotDifficulty = "very-easy" | "easy" | "medium" | "hard";
 export type PlayerController =
   | { kind: "human" }
   | { kind: "bot"; difficulty: BotDifficulty };
@@ -58,6 +58,7 @@ export interface LastAction {
   type: LastActionType;
   playerId: string;
   dieId?: string;
+  dieIds?: string[];
   completedKeys: string[];
   conflictDieIds: string[];
 }
