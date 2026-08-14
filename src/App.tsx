@@ -662,7 +662,7 @@ export default function App(): ReactElement {
         onNewGame={() => setView("local-setup")}
         newGameLabel="Home"
       >
-        {showMenu && !game.tabletopMode ? (
+        {showMenu ? (
           <MenuOverlay
             game={game}
             onResume={() => setShowMenu(false)}
@@ -3722,6 +3722,11 @@ function GameScreen({
     >
       {game.tabletopMode ? (
         <header className="tabletop-tools" aria-label="Game controls">
+          <button className="round-icon" type="button" aria-label="Open menu" onClick={handleOpenMenu}>
+            <span />
+            <span />
+            <span />
+          </button>
           <button className="new-game-chip" type="button" onClick={handleHeaderAction}>
             {newGameLabel}
           </button>

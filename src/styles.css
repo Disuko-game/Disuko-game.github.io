@@ -1791,13 +1791,19 @@ p {
 
 .tabletop-tools {
   display: flex;
-  justify-content: flex-end;
+  justify-content: space-between;
   min-height: 2.3rem;
 }
 
+.tabletop-tools .round-icon,
 .tabletop-tools .new-game-chip {
   min-height: 2.25rem;
   padding: 0 0.82rem;
+}
+
+.tabletop-tools .round-icon {
+  width: 2.75rem;
+  padding: 0;
 }
 
 .tabletop-play-area {
