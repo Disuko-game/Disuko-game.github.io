@@ -581,6 +581,17 @@ describe("Disuko rules engine", () => {
     expect(next.message).toContain("rerolled 2 dice");
   });
 
+  it("keeps reroll mode when the player has actions remaining after a roll", () => {
+    const game = newGame({ playerCount: 2, seed: "reroll-extra-action" });
+    const die = game.dice.find((candidate) => candidate.ownerId === "p1")!;
+    game.actionCredits = 2;
+
+    const next = rerollDice(game, [die.id]);
+
+    expect(next.currentPlayerIndex).toBe(0);
+    expect(next.actionCredits).toBe(1);
+    expect(next.mode).toBe("reroll");
+  });
   it("does not reroll all dice after an explicit zero reroll selection", () => {
     const game = newGame({ playerCount: 2, seed: "zero-reroll" });
     const blueDice = game.dice.filter((die) => die.ownerId === "p1");

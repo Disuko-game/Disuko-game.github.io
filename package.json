@@ -10,13 +10,16 @@
     "test": "vitest run"
   },
   "dependencies": {
+    "@dimforge/rapier3d-compat": "^0.20.0",
     "@supabase/supabase-js": "^2.107.0",
     "react": "^19.1.0",
-    "react-dom": "^19.1.0"
+    "react-dom": "^19.1.0",
+    "three": "^0.185.1"
   },
   "devDependencies": {
     "@types/react": "^19.1.6",
     "@types/react-dom": "^19.1.5",
+    "@types/three": "^0.185.4",
     "@vitejs/plugin-react": "^4.5.0",
     "typescript": "^5.8.3",
     "vite": "^6.3.5",

@@ -685,6 +685,24 @@ export async function leaveRoom(profileId: string, roomId: string): Promise<void
   }
 }
 
+export async function deleteRoom(roomId: string): Promise<void> {
+  const supabase = getSupabaseClient();
+  const { error } = await supabase.from("disuko_rooms").delete().eq("id", roomId);
+
+  if (error) {
+    throw error;
+  }
+}
+
+export async function resignRoom(roomId: string): Promise<void> {
+  const supabase = getSupabaseClient();
+  const { error } = await supabase.rpc("resign_disuko_room", { target_room_id: roomId });
+
+  if (error) {
+    throw error;
+  }
+}
+
 export async function inviteFriendToRoom(roomId: string, senderProfileId: string, recipientProfileId: string): Promise<void> {
   const supabase = getSupabaseClient();
   const { data: existingInvite, error: existingError } = await supabase

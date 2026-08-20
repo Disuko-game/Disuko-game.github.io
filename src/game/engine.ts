@@ -274,7 +274,7 @@ export function rerollDice(
     die.value = rolled.value;
   });
 
-  return resolveAction(
+  const result = resolveAction(
     next,
     "reroll",
     undefined,
@@ -282,6 +282,12 @@ export function rerollDice(
     previousCompletions,
     diceToRoll.map((die) => die.id)
   );
+
+  if (result.phase === "playing" && currentPlayer(result).id === player.id && result.actionCredits > 0) {
+    result.mode = "reroll";
+  }
+
+  return result;
 }
 
 export function challengeViolation(state: GameState, targetDieId?: string): GameState {

@@ -281,7 +281,7 @@ function chooseHardAction(state: GameState, actions: BotAction[]): BotAction {
     if (usesFutureGameRandomness(state, action)) {
       return {
         action,
-        score: expectedStochasticScore(state, action, rootPlayerId, HARD_STOCHASTIC_SAMPLES, true)
+        score: expectedStochasticScore(state, action, rootPlayerId, HARD_STOCHASTIC_SAMPLES, true, true)
       };
     }
 
@@ -313,7 +313,7 @@ function hardSearch(
   }
 
   if (handoffsRemaining < 0 || actionDepth >= HARD_ACTION_DEPTH || budget.remaining <= 0) {
-    return evaluateHardState(state, rootPlayerId);
+    return evaluateHardState(state, rootPlayerId, true);
   }
 
   budget.remaining -= 1;
@@ -328,7 +328,7 @@ function hardSearch(
   ).slice(0, HARD_NODE_BEAM);
 
   if (candidates.length === 0) {
-    return evaluateHardState(state, rootPlayerId);
+    return evaluateHardState(state, rootPlayerId, true);
   }
 
   const maximizing = actorId === rootPlayerId;
@@ -338,7 +338,7 @@ function hardSearch(
     let score: number;
 
     if (usesFutureGameRandomness(state, action)) {
-      score = expectedStochasticScore(state, action, rootPlayerId, HARD_STOCHASTIC_SAMPLES, true);
+      score = expectedStochasticScore(state, action, rootPlayerId, HARD_STOCHASTIC_SAMPLES, true, true);
     } else {
       const next = applyBotAction(state, action);
       const changedPlayer = next.phase === "playing" && currentPlayer(next).id !== actorId;
@@ -353,7 +353,7 @@ function hardSearch(
     }
   }
 
-  return Number.isFinite(bestScore) ? bestScore : evaluateHardState(state, rootPlayerId);
+  return Number.isFinite(bestScore) ? bestScore : evaluateHardState(state, rootPlayerId, true);
 }
 
 function rankedActionsForActor(
@@ -536,9 +536,9 @@ function mediumActionScore(state: GameState, action: BotAction, rootPlayerId: st
 
 function hardActionScore(state: GameState, action: BotAction, rootPlayerId: string): number {
   if (usesFutureGameRandomness(state, action)) {
-    return expectedStochasticScore(state, action, rootPlayerId, HARD_STOCHASTIC_SAMPLES, true);
+    return expectedStochasticScore(state, action, rootPlayerId, HARD_STOCHASTIC_SAMPLES, true, true);
   }
-  return actionEvaluation(state, applyBotAction(state, action), action, rootPlayerId, true);
+  return actionEvaluation(state, applyBotAction(state, action), action, rootPlayerId, true, true);
 }
 
 function expectedStochasticScore(
@@ -546,7 +546,8 @@ function expectedStochasticScore(
   action: BotAction,
   rootPlayerId: string,
   sampleCount: number,
-  preserveLastValues = false
+  preserveLastValues = false,
+  allOpponentThreats = false
 ): number {
   let total = 0;
 
@@ -558,18 +559,27 @@ function expectedStochasticScore(
     // predict the persisted reroll/challenge result.
     simulated.rngState = seedToState(`${decisionSignature(state)}|chance:${sample}`);
     const next = applyBotAction(simulated, action);
-    total += actionEvaluation(simulated, next, action, rootPlayerId, preserveLastValues);
+    total += actionEvaluation(simulated, next, action, rootPlayerId, preserveLastValues, allOpponentThreats);
   }
 
   return total / sampleCount;
 }
 
-function actionEvaluation(before: GameState, after: GameState, action: BotAction, rootPlayerId: string, preserveLastValues: boolean): number {
-  const baseScore = preserveLastValues ? evaluateHardState(after, rootPlayerId) : evaluateState(after, rootPlayerId);
+function actionEvaluation(
+  before: GameState,
+  after: GameState,
+  action: BotAction,
+  rootPlayerId: string,
+  preserveLastValues: boolean,
+  allOpponentThreats = false
+): number {
+  const baseScore = preserveLastValues
+    ? evaluateHardState(after, rootPlayerId, allOpponentThreats)
+    : evaluateState(after, rootPlayerId);
   const nextPlayerId = after.phase === "playing" && currentPlayer(after).id !== rootPlayerId
     ? currentPlayer(after).id
     : undefined;
-  const newlyCreatedThreat = nextPlayerId
+  const newlyCreatedThreat = !allOpponentThreats && nextPlayerId
     ? Math.max(0, completionThreatScore(after, nextPlayerId) - completionThreatScore(before, nextPlayerId))
     : 0;
   return baseScore + immediateActionValue(before, after, action, rootPlayerId) - newlyCreatedThreat;
@@ -649,8 +659,13 @@ function terminalStateScore(state: GameState, rootPlayerId: string): number | nu
   return state.winnerId === rootPlayerId ? WIN_SCORE : -WIN_SCORE;
 }
 
-function evaluateHardState(state: GameState, rootPlayerId: string): number {
-  return evaluateState(state, rootPlayerId) + (state.phase === "playing" ? hardValueReserveScore(state, rootPlayerId) : 0);
+function evaluateHardState(state: GameState, rootPlayerId: string, allOpponentThreats = false): number {
+  const opponentThreatPenalty = state.phase === "playing" && allOpponentThreats
+    ? allOpponentCompletionThreatScore(state, rootPlayerId)
+    : 0;
+  return evaluateState(state, rootPlayerId)
+    + (state.phase === "playing" ? hardValueReserveScore(state, rootPlayerId) : 0)
+    - opponentThreatPenalty;
 }
 
 function hardValueReserveScore(state: GameState, playerId: string): number {
@@ -669,12 +684,43 @@ function hardValueReserveScore(state: GameState, playerId: string): number {
   }, 0);
 }
 
-function completionThreatScore(state: GameState, playerId: string): number {
+function allOpponentCompletionThreatScore(state: GameState, rootPlayerId: string): number {
+  const rootIndex = state.players.findIndex((player) => player.id === rootPlayerId);
+
+  if (rootIndex < 0) {
+    return 0;
+  }
+
+  let score = 0;
+  for (let offset = 1; offset < state.players.length; offset += 1) {
+    const opponent = state.players[(rootIndex + offset) % state.players.length];
+    const completionPenalty = offset === 1
+      ? NEXT_PLAYER_COMPLETION_THREAT_PENALTY
+      : ADDITIONAL_COMPLETION_THREAT_PENALTY;
+    score += completionThreatScore(state, opponent.id, completionPenalty);
+  }
+  return score;
+}
+
+function completionThreatScore(
+  state: GameState,
+  playerId: string,
+  completionPenalty = NEXT_PLAYER_COMPLETION_THREAT_PENALTY
+): number {
   const values = new Set(offBoardDice(state, playerId).map((die) => die.value));
   if (values.size === 0) return 0;
   const units: Array<Array<{ row: number; col: number }>> = [];
   for (let row = 0; row < BOARD_SIZE; row += 1) units.push(Array.from({ length: BOARD_SIZE }, (_, col) => ({ row, col })));
   for (let col = 0; col < BOARD_SIZE; col += 1) units.push(Array.from({ length: BOARD_SIZE }, (_, row) => ({ row, col })));
+  for (let box = 0; box < BOARD_SIZE; box += 1) {
+    const boxRow = Math.floor(box / 3) * 3;
+    const boxCol = (box % 3) * 2;
+    const cells: Array<{ row: number; col: number }> = [];
+    for (let row = boxRow; row < boxRow + 3; row += 1) {
+      for (let col = boxCol; col < boxCol + 2; col += 1) cells.push({ row, col });
+    }
+    units.push(cells);
+  }
   let threats = 0;
   units.forEach((unit) => {
     const empty = unit.filter(({ row, col }) => !getDieAt(state, row, col));
@@ -684,7 +730,7 @@ function completionThreatScore(state: GameState, playerId: string): number {
     const placed = state.dice.filter((die) => isOnBoard(die) && die.value === value).length;
     if (values.has(value) && placed === 5 && legalCellCountForValue(state, value) > 0) threats += 1;
   });
-  return threats * NEXT_PLAYER_COMPLETION_THREAT_PENALTY
+  return threats * completionPenalty
     + (remainingDiceCount(state, playerId) === 1 && threats > 0 ? NEXT_PLAYER_WIN_THREAT_PENALTY : 0);
 }
 
@@ -991,7 +1037,7 @@ function boardCells(): Array<{ row: number; col: number }> {
   return cells;
 }
 const NEXT_PLAYER_COMPLETION_THREAT_PENALTY = 18_000;
-const ADDITIONAL_COMPLETION_THREAT_PENALTY = 14_000;
+const ADDITIONAL_COMPLETION_THREAT_PENALTY = 30_000;
 const NEXT_PLAYER_WIN_THREAT_PENALTY = 90_000;
 const HARD_VALUE_PRESENCE_BONUS = 700;
 const HARD_LAST_VALUE_RESERVE_BONUS = 2_400;

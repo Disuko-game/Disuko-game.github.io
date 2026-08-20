@@ -1,4 +1,7 @@
 import {
+  lazy,
+  Suspense,
+  useCallback,
   useEffect,
   useLayoutEffect,
   useMemo,
@@ -11,6 +14,7 @@ import {
   type ReactNode
 } from "react";
 import { applyBotAction, chooseBotAction, runBotTurn } from "./game/bot";
+import { shouldAnimateObservedAction } from "./game/actionPlayback";
 import { createPortal } from "react-dom";
 import { boxIndex, cellsForBox } from "./game/geometry";
 import {
@@ -54,6 +58,7 @@ import {
   createCurrentProfile,
   createRoom,
   currentRoomStatus,
+  deleteRoom,
   inviteFriendToRoom,
   joinRoom,
   joinRoomByCode,
@@ -67,6 +72,7 @@ import {
   optimisticRoomAfterGameCommit,
   playerIdForSeat,
   roomSeatCount,
+  resignRoom,
   respondToFriendRequest,
   respondToRoomInvite,
   sendFriendRequest,
@@ -84,21 +90,31 @@ import {
 } from "./lib/disukoMultiplayer";
 import { isSupabaseConfigured, type DisukoProfileRow } from "./lib/supabase";
 import { isTabletopViewportSupported } from "./tabletopFit";
+import {
+  REROLL_GATHER_DURATION_MS,
+  REROLL_TUMBLE_DURATION_MS,
+  preloadRerollPhysics,
+  rerollVariantFromKey
+} from "./game/rerollTumbles";
+
+const loadRerollDice3D = () => import("./RerollDice3D");
+const RerollDice3D = lazy(loadRerollDice3D);
+const LiveDice3DLayer = lazy(() => import("./LiveDice3DLayer"));
 
 const STORAGE_KEY = "disuko-save-v1";
 const DRAG_THRESHOLD_PX = 8;
 const REROLL_STACK_LONG_PRESS_MS = 450;
-const REROLL_GATHER_DURATION_MS = 520;
-const REROLL_FACE_TICK_MS = 90;
-const REROLL_ROLL_DURATION_MS = 1080;
+const REROLL_ROLL_DURATION_MS = REROLL_TUMBLE_DURATION_MS - REROLL_GATHER_DURATION_MS;
 const REROLL_LAND_PAUSE_MS = 260;
 const REROLL_RETURN_DURATION_MS = 560;
 const INVALID_MOVE_ANIMATION_MS = 2160;
+const INVALID_RETURN_DURATION_MS = 560;
 const COMPLETION_HIGHLIGHT_MS = 780;
 const COMPLETION_BONUS_MS = 980;
 const COMPACT_TRAY_INITIAL_HEIGHT_PX = 720;
 const LOCAL_BOT_FIRST_ACTION_DELAY_MS = 900;
 const LOCAL_BOT_NEXT_ACTION_DELAY_MS = 760;
+const LOCAL_BOT_COMPLETION_ANIMATION_GAP_MS = 180;
 const LOCAL_BOT_REROLL_ANIMATION_DELAY_MS =
   REROLL_GATHER_DURATION_MS + REROLL_ROLL_DURATION_MS + REROLL_LAND_PAUSE_MS + REROLL_RETURN_DURATION_MS + 180;
 const COMPACT_TRAY_RELEASE_MARGIN_PX = 96;
@@ -217,13 +233,32 @@ interface RerollAnimation {
   phase: RerollAnimationPhase;
   dice: Die[];
   finalGame: GameState;
-  tick: number;
   commitOnFinish: boolean;
+  variant: number;
 }
 
 interface RenderedDiePosition {
   center: ScreenPoint;
   size: number;
+}
+
+
+function localBotActionDelay(lastAction: GameState["lastAction"], isFirstBotAction: boolean): number {
+  if (lastAction?.type === "reroll") {
+    return LOCAL_BOT_REROLL_ANIMATION_DELAY_MS;
+  }
+
+  const completedSetCount = lastAction?.completedKeys.length ?? 0;
+
+  if (completedSetCount > 0) {
+    return (
+      completedSetCount * COMPLETION_HIGHLIGHT_MS +
+      COMPLETION_BONUS_MS +
+      LOCAL_BOT_COMPLETION_ANIMATION_GAP_MS
+    );
+  }
+
+  return isFirstBotAction ? LOCAL_BOT_FIRST_ACTION_DELAY_MS : LOCAL_BOT_NEXT_ACTION_DELAY_MS;
 }
 
 
@@ -240,6 +275,7 @@ interface InvalidMovePreview {
   id: number;
   die: Die;
   returnKind: InvalidReturnKind;
+  showsInvalidFeedback: boolean;
   startX: number;
   startY: number;
   returnX: number;
@@ -372,11 +408,7 @@ export default function App(): ReactElement {
           chooseBotAction(currentGame, bot.controller.difficulty)
         );
       });
-    }, game.lastAction?.type === "reroll"
-      ? LOCAL_BOT_REROLL_ANIMATION_DELAY_MS
-      : isFirstBotAction
-        ? LOCAL_BOT_FIRST_ACTION_DELAY_MS
-        : LOCAL_BOT_NEXT_ACTION_DELAY_MS);
+    }, localBotActionDelay(game.lastAction, isFirstBotAction));
 
     return () => window.clearTimeout(timer);
   }, [game, view]);
@@ -611,6 +643,46 @@ export default function App(): ReactElement {
     }
   };
 
+  const handleRoomExit = async (summary: CurrentRoomSummary) => {
+    if (!profile) {
+      return;
+    }
+
+    const isLobby = summary.room.status === "lobby";
+    const isHost = summary.room.host_profile_id === profile.id;
+    const action = isLobby || summary.room.status === "finished"
+      ? (isHost ? "delete" : "leave")
+      : "resign";
+    const prompt = action === "delete"
+      ? "Delete this game? This cannot be undone."
+      : action === "leave"
+        ? "Leave this game lobby?"
+        : "Resign from this game? The game will end for every player.";
+
+    if (!window.confirm(prompt)) {
+      return;
+    }
+
+    setOnlineBusy(true);
+    setOnlineError(null);
+
+    try {
+      if (action === "delete") {
+        await deleteRoom(summary.room.id);
+      } else if (action === "leave") {
+        await leaveRoom(profile.id, summary.room.id);
+      } else {
+        await resignRoom(summary.room.id);
+      }
+
+      await refreshDashboard(profile);
+    } catch (caughtError) {
+      setOnlineError(formatError(caughtError));
+    } finally {
+      setOnlineBusy(false);
+    }
+  };
+
   if (booting) {
     return <SplashScreen />;
   }
@@ -698,6 +770,7 @@ export default function App(): ReactElement {
           setOnlineError(null);
           setActiveRoomId(roomId);
         }}
+        onExit={(summary) => void handleRoomExit(summary)}
         onAcceptInvite={(invite) => void handleRoomInvite(invite, "accepted")}
         onDeclineInvite={(invite) => void handleRoomInvite(invite, "declined")}
         onCreate={() => setView("online-create")}
@@ -1013,7 +1086,8 @@ function OnlineGamesScreen({
   onDeclineInvite,
   onCreate,
   onJoin,
-  onRefresh
+  onRefresh,
+  onExit
 }: {
   profile: DisukoProfileRow;
   rooms: CurrentRoomSummary[];
@@ -1027,6 +1101,7 @@ function OnlineGamesScreen({
   onCreate: () => void;
   onJoin: () => void;
   onRefresh: () => void;
+  onExit: (summary: CurrentRoomSummary) => void;
 }): ReactElement {
   return (
     <OnlineFrame title="Online games" onBack={onBack}>
@@ -1045,6 +1120,7 @@ function OnlineGamesScreen({
           profileId={profile.id}
           disabled={busy}
           onOpen={onOpenRoom}
+          onExit={onExit}
         />
         <section className="online-card online-bottom-actions">
           <div className="online-card-title-row">
@@ -1535,12 +1611,14 @@ function CurrentGamesList({
   rooms,
   profileId,
   disabled,
-  onOpen
+  onOpen,
+  onExit
 }: {
   rooms: CurrentRoomSummary[];
   profileId: string;
   disabled: boolean;
   onOpen: (roomId: string) => void;
+  onExit: (summary: CurrentRoomSummary) => void;
 }): ReactElement {
   return (
     <section className="online-card current-games-card">
@@ -1565,14 +1643,24 @@ function CurrentGamesList({
                 <span>{playersLabel}</span>
                 <span>{detail}</span>
               </div>
-              <button
-                className={status === "your-turn" ? "primary-button online-small-button" : "secondary-button online-small-button"}
-                type="button"
-                disabled={disabled}
-                onClick={() => onOpen(summary.room.id)}
-              >
-                Open
-              </button>
+              <div className="current-game-actions">
+                <button
+                  className={status === "your-turn" ? "primary-button online-small-button" : "secondary-button online-small-button"}
+                  type="button"
+                  disabled={disabled}
+                  onClick={() => onOpen(summary.room.id)}
+                >
+                  Open
+                </button>
+                <button
+                  className="secondary-button online-small-button online-resign-button"
+                  type="button"
+                  disabled={disabled}
+                  onClick={() => onExit(summary)}
+                >
+                  {summary.room.status === "playing" ? "Resign" : summary.room.host_profile_id === profileId ? "Delete" : "Leave"}
+                </button>
+              </div>
             </article>
           );
         })}
@@ -2408,6 +2496,7 @@ function GameScreen({
   suppressTurnPrompt?: boolean;
   children: ReactNode;
 }): ReactElement {
+  const [diceRendererReady, setDiceRendererReady] = useState(false);
   const [openRerollValue, setOpenRerollValue] = useState<DiceValue | null>(null);
   const [hasExplicitRerollSelection, setHasExplicitRerollSelection] = useState(false);
   const [dragPreview, setDragPreview] = useState<{ die: Die; x: number; y: number } | null>(null);
@@ -2465,6 +2554,7 @@ function GameScreen({
     fired: boolean;
   } | null>(null);
   const suppressNextClick = useRef(false);
+  const handleDiceRendererReady = useCallback(() => setDiceRendererReady(true), []);
   const activePlayer = currentPlayer(game);
   const isBotTurn = activePlayer.controller?.kind === "bot";
   const localHumanPlayers = game.players.filter((player) => player.controller?.kind !== "bot");
@@ -2548,6 +2638,13 @@ function GameScreen({
   }, [onCommit]);
 
   useEffect(() => {
+    if (game.mode === "reroll" || isBotTurn || onlinePlayerId !== undefined) {
+      void loadRerollDice3D();
+      void preloadRerollPhysics().catch(() => undefined);
+    }
+  }, [game.mode, isBotTurn, onlinePlayerId]);
+
+  useEffect(() => {
     const signature = boardChangeAnimationSignature(game);
 
     if (!signature || signature === landingBoardChangeSignature.current) {
@@ -2578,9 +2675,9 @@ function GameScreen({
     const previousGame = previousGameForBotDrag.current;
     previousGameForBotDrag.current = game;
     const action = game.lastAction;
-    const bot = action ? game.players.find((player) => player.id === action.playerId) : undefined;
+    const actor = action ? game.players.find((player) => player.id === action.playerId) : undefined;
 
-    if (previousGame === game || bot?.controller.kind !== "bot") {
+    if (previousGame === game || !shouldAnimateObservedAction(actor, onlinePlayerId)) {
       return;
     }
 
@@ -2598,8 +2695,8 @@ function GameScreen({
           phase: "gathering",
           dice: rerolledDice,
           finalGame: game,
-          tick: 0,
-          commitOnFinish: false
+          commitOnFinish: false,
+          variant: rerollVariantFromKey(signature)
         });
       }
       return;
@@ -2653,7 +2750,7 @@ function GameScreen({
       setBotDragAnimation((current) => (current?.id === id ? null : current));
       botDragAnimationTimer.current = null;
     }, 620);
-  }, [game]);
+  }, [game, onlinePlayerId]);
 
   useEffect(() => {
     if (!rerollAnimation) {
@@ -2661,63 +2758,50 @@ function GameScreen({
     }
 
     if (rerollAnimation.phase === "gathering") {
+      const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
       const timer = window.setTimeout(() => {
         setRerollAnimation((current) =>
           current?.phase === "gathering" ? { ...current, phase: "rolling" } : current
         );
-      }, REROLL_GATHER_DURATION_MS);
+      }, reducedMotion ? 80 : REROLL_GATHER_DURATION_MS);
       return () => window.clearTimeout(timer);
     }
 
     if (rerollAnimation.phase === "rolling") {
-      const interval = window.setInterval(() => {
-        setRerollAnimation((current) => {
-          if (!current || current.phase !== "rolling") return current;
-          const nextTick = current.tick + 1;
-          return {
-            ...current,
-            tick: nextTick,
-            dice: current.dice.map((die, index) => ({
-              ...die,
-              value: (((die.value + nextTick + index - 1) % 6) + 1) as DiceValue
-            }))
-          };
-        });
-      }, REROLL_FACE_TICK_MS);
+      const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
       const timer = window.setTimeout(() => {
-        setRerollAnimation((current) => {
-          if (!current || current.phase !== "rolling") return current;
-          const finalDiceById = new Map(current.finalGame.dice.map((die) => [die.id, die]));
-          return {
-            ...current,
-            phase: "landed",
-            dice: current.dice.map((die) => ({ ...(finalDiceById.get(die.id) ?? die) }))
-          };
-        });
-      }, REROLL_ROLL_DURATION_MS);
+        setRerollAnimation((current) =>
+          current?.phase === "rolling" ? { ...current, phase: "landed" } : current
+        );
+      }, reducedMotion ? 180 : REROLL_ROLL_DURATION_MS);
 
-      return () => {
-        window.clearInterval(interval);
-        window.clearTimeout(timer);
-      };
+      return () => window.clearTimeout(timer);
     }
 
     if (rerollAnimation.phase === "landed") {
+      const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
       const timer = window.setTimeout(() => {
-        setRerollAnimation((current) =>
-          current?.phase === "landed" ? { ...current, phase: "returning" } : current
-        );
-      }, REROLL_LAND_PAUSE_MS);
+        setRerollAnimation((current) => {
+          if (!current || current.phase !== "landed") return current;
+          const finalDiceById = new Map(current.finalGame.dice.map((die) => [die.id, die]));
+          return {
+            ...current,
+            phase: "returning",
+            dice: current.dice.map((die) => ({ ...(finalDiceById.get(die.id) ?? die) }))
+          };
+        });
+      }, reducedMotion ? 120 : REROLL_LAND_PAUSE_MS);
       return () => window.clearTimeout(timer);
     }
 
     const { commitOnFinish, finalGame } = rerollAnimation;
+    const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
     const timer = window.setTimeout(() => {
       if (commitOnFinish) {
         onCommitRef.current(finalGame);
       }
       setRerollAnimation((current) => (current?.finalGame === finalGame ? null : current));
-    }, REROLL_RETURN_DURATION_MS);
+    }, reducedMotion ? 180 : REROLL_RETURN_DURATION_MS);
     return () => window.clearTimeout(timer);
   }, [rerollAnimation?.phase]);
 
@@ -3195,7 +3279,7 @@ function GameScreen({
     die: Die,
     from: ScreenPoint,
     to?: ScreenPoint | null,
-    options: { playerId?: string; returnKind?: InvalidReturnKind } = {}
+    options: { playerId?: string; returnKind?: InvalidReturnKind; showsInvalidFeedback?: boolean } = {}
   ) => {
     if (invalidMovePreviewTimer.current !== null) {
       window.clearTimeout(invalidMovePreviewTimer.current);
@@ -3208,12 +3292,14 @@ function GameScreen({
     };
     const id = invalidMovePreviewId.current + 1;
     const returnKind = options.returnKind ?? (isOnBoard(die) ? "move" : "place");
+    const showsInvalidFeedback = options.showsInvalidFeedback ?? false;
 
     invalidMovePreviewId.current = id;
     setInvalidMovePreview({
       id,
       die,
       returnKind,
+      showsInvalidFeedback,
       startX: from.x,
       startY: from.y,
       returnX: destination.x - from.x,
@@ -3222,7 +3308,7 @@ function GameScreen({
     invalidMovePreviewTimer.current = window.setTimeout(() => {
       setInvalidMovePreview((current) => (current?.id === id ? null : current));
       invalidMovePreviewTimer.current = null;
-    }, INVALID_MOVE_ANIMATION_MS);
+    }, showsInvalidFeedback ? INVALID_MOVE_ANIMATION_MS : INVALID_RETURN_DURATION_MS);
   };
 
   const showInvalidPlacement = (
@@ -3238,7 +3324,8 @@ function GameScreen({
 
     showInvalidMoveReturn(die, from, to, {
       playerId: activePlayer.id,
-      returnKind: "place"
+      returnKind: "place",
+      showsInvalidFeedback: true
     });
   };
 
@@ -3413,7 +3500,8 @@ function GameScreen({
         const from = returnPath?.from ?? (cell ? centerOfElement(cell) : findRenderedDieCenter(die));
 
         showInvalidMoveReturn(die, from ?? { x: window.innerWidth / 2, y: window.innerHeight / 2 }, returnPath?.to, {
-          returnKind: "move"
+          returnKind: "move",
+          showsInvalidFeedback: true
         });
         showConflictBlockerHighlight(conflictBlockerDieIds(game, die, row, col));
       }
@@ -3612,12 +3700,19 @@ function GameScreen({
     setOpenRerollValue(null);
     clearStackLongPress();
     const finalGame = rerollDice(game, selectedRerollDice.map((die) => die.id), { defaultToAll: false });
+    const rollKey = [
+      game.seed,
+      game.turnNumber,
+      game.rngState,
+      activePlayer.id,
+      ...selectedRerollDice.map((die) => die.id)
+    ].join(":");
     setRerollAnimation({
-      phase: "rolling",
+      phase: "gathering",
       dice: selectedRerollDice.map((die) => ({ ...die })),
       finalGame,
-      tick: 0,
-      commitOnFinish: true
+      commitOnFinish: true,
+      variant: rerollVariantFromKey(rollKey)
     });
     setHasExplicitRerollSelection(false);
   };
@@ -3714,12 +3809,23 @@ function GameScreen({
 
   return (
     <main
+      aria-busy={!diceRendererReady}
       className={`game-shell ${game.tabletopMode ? "is-tabletop" : ""} ${isBotTurn ? "is-pc-turn" : ""} ${
         compactTrayLayout ? "has-compact-trays" : ""
-      }`}
+      } ${diceRendererReady ? "" : "is-dice-loading"}`}
       ref={shellRef}
       style={game.tabletopMode ? ({ "--active-player-color": activePlayerColor } as CSSProperties) : undefined}
     >
+      <Suspense fallback={null}>
+        <LiveDice3DLayer onReady={handleDiceRendererReady} />
+      </Suspense>
+      {!diceRendererReady ? (
+        <div className="dice-render-loader" role="status" aria-live="polite">
+          <img src={logoUrl} alt="Disuko" />
+          <span className="dice-render-loader-spinner" aria-hidden="true" />
+          <strong>Loading game table…</strong>
+        </div>
+      ) : null}
       {game.tabletopMode ? (
         <header className="tabletop-tools" aria-label="Game controls">
           <button className="round-icon" type="button" aria-label="Open menu" onClick={handleOpenMenu}>
@@ -3774,8 +3880,11 @@ function GameScreen({
           playerId={rerollTrayPlayerId}
           playerName={rerollTrayPlayer.name}
           dice={rerollTrayDice}
+          finalDice={rerollAnimation?.finalGame.dice}
           phase={rerollAnimation?.phase}
-          placement={rerollTrayPlayer.controller?.kind === "bot" ? "below" : "above"}
+          playerColor={rerollTrayPlayer.color}
+          variant={rerollAnimation?.variant ?? 0}
+          launchSide={game.tabletopMode ? "bottom" : rerollTrayPlayer.controller?.kind === "bot" ? "top" : "bottom"}
           tabletopSlot={game.tabletopMode ? tabletopSlotForPlayer(game, rerollTrayPlayer.id) : undefined}
           canEdit={!rerollAnimation && canUseTurnControls}
           onDieClick={(die) => setRerollDieSelected(die.id, false)}
@@ -3816,7 +3925,7 @@ function GameScreen({
           <div
             className={`invalid-return-preview ${
               invalidMovePreview.returnKind === "move" ? "is-board-move" : "is-placement"
-            }`}
+            } ${invalidMovePreview.showsInvalidFeedback ? "is-invalid-feedback" : ""}`}
             style={
               {
                 left: invalidMovePreview.startX,
@@ -4356,8 +4465,11 @@ function FloatingRerollTray({
   playerId,
   playerName,
   dice,
+  finalDice,
   phase,
-  placement,
+  playerColor,
+  variant,
+  launchSide,
   tabletopSlot,
   canEdit,
   onDieClick,
@@ -4369,8 +4481,11 @@ function FloatingRerollTray({
   playerId: string;
   playerName: string;
   dice: Die[];
+  finalDice?: Die[];
   phase?: RerollAnimationPhase;
-  placement: "above" | "below";
+  playerColor: PlayerColor;
+  variant: number;
+  launchSide: "top" | "right" | "bottom" | "left";
   tabletopSlot?: TabletopSlot;
   canEdit: boolean;
   onDieClick: (die: Die) => void;
@@ -4383,10 +4498,21 @@ function FloatingRerollTray({
   const [position, setPosition] = useState<{
     left: number;
     top: number;
+    width: number;
+    height: number;
     returnX: number;
     returnY: number;
     returnByDieId: Record<string, ScreenPoint>;
+    startByDieId: Record<string, ScreenPoint>;
   } | null>(null);
+  const [landedCentersByDieId, setLandedCentersByDieId] = useState<Record<string, ScreenPoint>>({});
+  const [returnLayoutReady, setReturnLayoutReady] = useState(false);
+
+  useLayoutEffect(() => {
+    if (phase !== "returning") {
+      setReturnLayoutReady(false);
+    }
+  }, [phase]);
 
   useLayoutEffect(() => {
     const updatePosition = () => {
@@ -4398,87 +4524,30 @@ function FloatingRerollTray({
           anchor.getBoundingClientRect().width > 0 &&
           anchor.getBoundingClientRect().height > 0
       );
+      const board = document.querySelector<HTMLElement>(".board-wrap");
 
-      if (!tray || !source) {
+      if (!tray || !source || !board) {
         setPosition(null);
         return;
       }
 
       const sourceRect = source.getBoundingClientRect();
-      const trayRect = tray.getBoundingClientRect();
-      const cssLeft = Number.parseFloat(tray.style.left) || 0;
-      const cssTop = Number.parseFloat(tray.style.top) || 0;
-      const transformedOffset = {
-        x: trayRect.left - cssLeft,
-        y: trayRect.top - cssTop
+      const boardRect = board.getBoundingClientRect();
+      const boardCenter = {
+        x: boardRect.left + boardRect.width / 2,
+        y: boardRect.top + boardRect.height / 2
       };
-      const gap = 10;
-      const margin = 10;
-      const gameHeaderRect = document.querySelector<HTMLElement>(".game-header")?.getBoundingClientRect();
-      const minimumTop = tabletopSlot ? margin : Math.max(margin, (gameHeaderRect?.bottom ?? 0) + gap);
-      const opponentZone = source.closest<HTMLElement>(".opponent-tray-zone")?.getBoundingClientRect();
-      const boardRect = document.querySelector<HTMLElement>(".board-wrap")?.getBoundingClientRect();
-      const boardCandidate = boardRect
-        ? {
-            left: boardRect.left + (boardRect.width - trayRect.width) / 2,
-            top: boardRect.top + (boardRect.height - trayRect.height) / 2
-          }
-        : { left: sourceRect.left, top: sourceRect.top };
-      const preferredBelowTop = opponentZone ? opponentZone.bottom + gap : sourceRect.bottom + gap;
-      const tabletopCandidate = tabletopSlot === "top"
-        ? { left: sourceRect.left + (sourceRect.width - trayRect.width) / 2, top: sourceRect.bottom + gap }
+      const cssPosition = tabletopSlot === "top"
+        ? { left: boardRect.right, top: boardRect.bottom }
         : tabletopSlot === "left"
-          ? { left: sourceRect.right + gap, top: sourceRect.top + (sourceRect.height - trayRect.height) / 2 }
+          ? { left: boardRect.right, top: boardRect.top }
           : tabletopSlot === "right"
-            ? { left: sourceRect.left - trayRect.width - gap, top: sourceRect.top + (sourceRect.height - trayRect.height) / 2 }
-            : tabletopSlot === "bottom"
-              ? { left: sourceRect.left + (sourceRect.width - trayRect.width) / 2, top: sourceRect.top - trayRect.height - gap }
-              : null;
-      const standardCandidates = placement === "below"
-        ? [
-            { left: sourceRect.left + (sourceRect.width - trayRect.width) / 2, top: preferredBelowTop },
-            boardCandidate,
-            { left: sourceRect.right + gap, top: sourceRect.top },
-            { left: sourceRect.left - trayRect.width - gap, top: sourceRect.top },
-            { left: sourceRect.left + (sourceRect.width - trayRect.width) / 2, top: sourceRect.top - trayRect.height - gap }
-          ]
-        : [
-            { left: sourceRect.left + (sourceRect.width - trayRect.width) / 2, top: sourceRect.top - trayRect.height - gap },
-            boardCandidate,
-            { left: sourceRect.right + gap, top: sourceRect.top },
-            { left: sourceRect.left - trayRect.width - gap, top: sourceRect.top },
-            { left: sourceRect.left + (sourceRect.width - trayRect.width) / 2, top: sourceRect.bottom + gap }
-          ];
-      const candidates = tabletopCandidate ? [tabletopCandidate, boardCandidate, ...standardCandidates] : standardCandidates;
-      const anchorRects = anchors.map((anchor) => anchor.getBoundingClientRect());
-      const clampCandidate = (candidate: { left: number; top: number }) => ({
-        left: Math.min(Math.max(candidate.left, margin), window.innerWidth - trayRect.width - margin),
-        top: Math.max(minimumTop, Math.min(candidate.top, window.innerHeight - trayRect.height - margin))
-      });
-      const overlapsDiceTray = (candidate: { left: number; top: number }) => {
-        const right = candidate.left + trayRect.width;
-        const bottom = candidate.top + trayRect.height;
-        return anchorRects.some(
-          (rect) =>
-            candidate.left < rect.right + gap &&
-            right > rect.left - gap &&
-            candidate.top < rect.bottom + gap &&
-            bottom > rect.top - gap
-        );
-      };
-      const resolved = candidates
-        .map(clampCandidate)
-        .find((candidate) => !overlapsDiceTray(candidate))
-        ?? clampCandidate(candidates[0]);
+            ? { left: boardRect.left, top: boardRect.bottom }
+            : { left: boardRect.left, top: boardRect.top };
       const sourceCenter = {
         x: sourceRect.left + sourceRect.width / 2,
         y: sourceRect.top + sourceRect.height / 2
       };
-      const trayCenter = {
-        x: resolved.left + trayRect.width / 2,
-        y: resolved.top + trayRect.height / 2
-      };
-
       const toLocalReturn = (screenReturn: ScreenPoint): ScreenPoint => tabletopSlot === "top"
         ? { x: -screenReturn.x, y: -screenReturn.y }
         : tabletopSlot === "left"
@@ -4487,18 +4556,14 @@ function FloatingRerollTray({
             ? { x: -screenReturn.y, y: screenReturn.x }
             : screenReturn;
       const localReturn = toLocalReturn({
-        x: sourceCenter.x - trayCenter.x,
-        y: sourceCenter.y - trayCenter.y
+        x: sourceCenter.x - boardCenter.x,
+        y: sourceCenter.y - boardCenter.y
       });
-      const trayDelta = {
-        x: resolved.left - trayRect.left,
-        y: resolved.top - trayRect.top
-      };
       const rerollDieElements = Array.from(tray.querySelectorAll<HTMLElement>("[data-reroll-die-id]"));
       const returnByDieId = Object.fromEntries(
         dice.map((die) => {
           const dieElement = rerollDieElements.find((element) => element.dataset.rerollDieId === die.id);
-          const valueSlot = source.querySelector<HTMLElement>(`[data-dice-value-slot="${die.value}"]`);
+          const valueSlot = source.querySelector<HTMLElement>('[data-dice-value-slot="' + die.value + '"]');
 
           if (!dieElement || !valueSlot) {
             return [die.id, localReturn];
@@ -4509,20 +4574,45 @@ function FloatingRerollTray({
           return [
             die.id,
             toLocalReturn({
-              x: valueSlotRect.left + valueSlotRect.width / 2 - (dieRect.left + dieRect.width / 2 + trayDelta.x),
-              y: valueSlotRect.top + valueSlotRect.height / 2 - (dieRect.top + dieRect.height / 2 + trayDelta.y)
+              x: valueSlotRect.left + valueSlotRect.width / 2 - (dieRect.left + dieRect.width / 2),
+              y: valueSlotRect.top + valueSlotRect.height / 2 - (dieRect.top + dieRect.height / 2)
             })
           ];
         })
       );
 
+      const startByDieId = Object.fromEntries(
+        dice.map((die) => {
+          const dieElement = rerollDieElements.find((element) => element.dataset.rerollDieId === die.id);
+          const landedCenter = landedCentersByDieId[die.id];
+
+          if (!dieElement || !landedCenter) {
+            return [die.id, { x: 0, y: 0 }];
+          }
+
+          const dieRect = dieElement.getBoundingClientRect();
+          return [
+            die.id,
+            toLocalReturn({
+              x: landedCenter.x - (dieRect.left + dieRect.width / 2),
+              y: landedCenter.y - (dieRect.top + dieRect.height / 2)
+            })
+          ];
+        })
+      );
       setPosition({
-        left: resolved.left - transformedOffset.x,
-        top: resolved.top - transformedOffset.y,
+        left: cssPosition.left,
+        top: cssPosition.top,
+        width: boardRect.width,
+        height: boardRect.height,
         returnX: localReturn.x,
         returnY: localReturn.y,
-        returnByDieId
+        returnByDieId,
+        startByDieId
       });
+      if (phase === "returning") {
+        setReturnLayoutReady(true);
+      }
     };
 
     updatePosition();
@@ -4532,11 +4622,21 @@ function FloatingRerollTray({
       window.removeEventListener("resize", updatePosition);
       window.removeEventListener("scroll", updatePosition, true);
     };
-  }, [dice.length, phase, placement, playerId, tabletopSlot]);
+  }, [dice.length, landedCentersByDieId, phase, playerId, tabletopSlot, position?.height, position?.width]);
+
+  const threeDDice = useMemo(() => {
+    const finalDiceById = new Map((finalDice ?? dice).map((die) => [die.id, die]));
+    return dice.map((die) => {
+      const finalDie = finalDiceById.get(die.id) ?? die;
+      return { id: die.id, initialValue: die.value, finalValue: finalDie.value };
+    });
+  }, [dice, finalDice]);
+  const showThreeDRoll = phase === "gathering" || phase === "rolling" || phase === "landed";
+  const renderedPhase = phase === "returning" && !returnLayoutReady ? "return-preparing" : phase;
 
   return createPortal(
     <div
-      className={`floating-reroll-tray ${phase ? `is-${phase}` : "is-selecting"} ${
+      className={`floating-reroll-tray ${renderedPhase ? `is-${renderedPhase}` : "is-selecting"} ${
         !phase && dice.length === 0 ? "is-empty" : ""
       } ${
         tabletopSlot ? `is-tabletop tabletop-facing-${tabletopSlot}` : ""
@@ -4548,6 +4648,8 @@ function FloatingRerollTray({
         {
           left: position?.left ?? 0,
           top: position?.top ?? 0,
+          width: position?.width,
+          height: position?.height,
           visibility: position ? "visible" : "hidden",
           "--reroll-return-x": `${position?.returnX ?? 0}px`,
           "--reroll-return-y": `${position?.returnY ?? 0}px`
@@ -4557,8 +4659,24 @@ function FloatingRerollTray({
       <strong>
         {phase ? `${playerName} is re-rolling` : "Select or drop dice here to re-roll"}
       </strong>
-      <div className="reroll-tray-dice">
-        {dice.map((die, index) => (
+      <div className={"reroll-tray-dice" + (showThreeDRoll ? " has-3d-roll" : "")}>
+        {showThreeDRoll ? (
+          <Suspense
+            fallback={(
+              <div className="reroll-3d-suspense-dice" aria-hidden="true">
+                {dice.map((die) => <DieFace die={die} compact key={die.id} />)}
+              </div>
+            )}
+          >
+            <RerollDice3D
+              dice={threeDDice}
+              playerColor={playerColor}
+              variant={variant}
+              launchSide={launchSide}
+              onSettledCenters={setLandedCentersByDieId}
+            />
+          </Suspense>
+        ) : dice.map((die, index) => (
             <button
               className="reroll-tray-die"
               data-reroll-die-id={die.id}
@@ -4569,6 +4687,8 @@ function FloatingRerollTray({
               style={
                 {
                   "--reroll-die-index": index,
+                  "--reroll-die-start-x": `${position?.startByDieId[die.id]?.x ?? 0}px`,
+                  "--reroll-die-start-y": `${position?.startByDieId[die.id]?.y ?? 0}px`,
                   "--reroll-die-return-x": `${position?.returnByDieId[die.id]?.x ?? position?.returnX ?? 0}px`,
                   "--reroll-die-return-y": `${position?.returnByDieId[die.id]?.y ?? position?.returnY ?? 0}px`
                 } as CSSProperties
@@ -5065,6 +5185,9 @@ function DieFace({
         draggingSource ? "is-dragging-source" : ""
       } ${landing ? "is-landing" : ""} ${compact ? "is-compact" : ""}`}
       data-die-id={placeholder ? undefined : die.id}
+      data-live-die-3d={placeholder ? undefined : "true"}
+      data-live-die-value={placeholder ? undefined : die.value}
+      data-live-die-owner={placeholder ? undefined : die.ownerId}
       onClick={(event) => {
         if (!onClick) {
           return;
@@ -5080,16 +5203,20 @@ function DieFace({
       role={placeholder ? undefined : onClick ? "button" : "img"}
       tabIndex={onClick ? 0 : undefined}
     >
-      {pipMap[die.value].map((position) => (
-        <span
-          className="pip"
-          key={position}
-          style={{
-            gridColumn: pipPositions[position].col,
-            gridRow: pipPositions[position].row
-          }}
-        />
-      ))}
+      <span className="die-face-depth" aria-hidden="true" />
+      <span className="die-face-surface" aria-hidden="true">
+        {pipMap[die.value].map((position) => (
+          <span
+            className="pip"
+            key={position}
+            style={{
+              gridColumn: pipPositions[position].col,
+              gridRow: pipPositions[position].row
+            }}
+          />
+        ))}
+      </span>
+
       {multiplier ? <span className="die-multiplier">{multiplier}</span> : null}
       {moveLocked ? (
         <span className="die-lock-icon" aria-hidden="true">

@@ -182,6 +182,32 @@ describe("Disuko bots", () => {
     expect(result.state.phase).toBe("playing");
     expect(currentPlayer(result.state).id).toBe("p2");
   });
+
+  it.each([
+    { playerCount: 3 as const, threatenedPlayerId: "p3" as const },
+    { playerCount: 4 as const, threatenedPlayerId: "p3" as const },
+    { playerCount: 4 as const, threatenedPlayerId: "p4" as const }
+  ])(
+    "has hard avoid creating a value-set completion for $threatenedPlayerId in a $playerCount-player game",
+    ({ playerCount, threatenedPlayerId }) => {
+      const game = distantOpponentThreatGame(
+        `hard-${playerCount}-player-${threatenedPlayerId}-value-threat`,
+        playerCount,
+        threatenedPlayerId
+      );
+      const riskyDieIds = offBoardDice(game, "p1")
+        .filter((die) => die.value === 6)
+        .map((die) => die.id);
+
+      expect(riskyDieIds).toHaveLength(2);
+      expect(offBoardDice(game, "p2").some((die) => die.value === 6)).toBe(false);
+      expect(offBoardDice(game, threatenedPlayerId).some((die) => die.value === 6)).toBe(true);
+
+      const action = chooseBotAction(game, "hard");
+
+      expect(action.type !== "place" || !riskyDieIds.includes(action.dieId)).toBe(true);
+    }
+  );
 });
 
 function compactOpenGame(seed: string): GameState {
@@ -218,6 +244,54 @@ function comboGame(seed: string): GameState {
     die.value = (col + 1) as DiceValue;
     die.row = 0;
     die.col = col;
+  });
+
+  return game;
+}
+
+function distantOpponentThreatGame(
+  seed: string,
+  playerCount: 3 | 4,
+  threatenedPlayerId: "p3" | "p4"
+): GameState {
+  const game = newGame({ playerCount, seed });
+  const diceFor = (playerId: string) => game.dice.filter((die) => die.ownerId === playerId);
+  const playerOneDice = diceFor("p1").slice(0, 5);
+  const playerTwoDice = diceFor("p2").slice(0, 2);
+  const threatenedPlayerDice = diceFor(threatenedPlayerId).slice(0, 2);
+  const boardOwnerId = playerCount === 3 ? "p2" : threatenedPlayerId === "p3" ? "p4" : "p3";
+  const boardOwnerOffset = boardOwnerId === "p2" ? 2 : 1;
+  const boardOwnerTray = boardOwnerId === "p2" ? [] : diceFor(boardOwnerId).slice(0, 1);
+  const boardDice = diceFor(boardOwnerId).slice(boardOwnerOffset, boardOwnerOffset + 4);
+
+  game.dice = [
+    ...playerOneDice,
+    ...playerTwoDice,
+    ...threatenedPlayerDice,
+    ...boardOwnerTray,
+    ...boardDice
+  ].filter((die, index, dice) => dice.findIndex((candidate) => candidate.id === die.id) === index);
+  playerOneDice[0].value = 6;
+  playerOneDice[1].value = 6;
+  playerOneDice[2].value = 1;
+  playerOneDice[3].value = 2;
+  playerOneDice[4].value = 3;
+  playerTwoDice[0].value = 2;
+  playerTwoDice[1].value = 3;
+  threatenedPlayerDice[0].value = 6;
+  threatenedPlayerDice[1].value = 4;
+  if (boardOwnerTray[0]) boardOwnerTray[0].value = 5;
+
+  const valueSetPositions = [
+    { row: 0, col: 0 },
+    { row: 1, col: 2 },
+    { row: 2, col: 4 },
+    { row: 3, col: 1 }
+  ];
+  boardDice.forEach((die, index) => {
+    die.value = 6;
+    die.row = valueSetPositions[index].row;
+    die.col = valueSetPositions[index].col;
   });
 
   return game;
