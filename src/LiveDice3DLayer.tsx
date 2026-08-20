@@ -78,6 +78,8 @@ export default function LiveDice3DLayer({ onReady }: { onReady: () => void }): R
     document.body.appendChild(badgeLayer);
     document.documentElement.classList.add("live-dice-3d-overlay-ready");
     const badgeOverlays = new Map<HTMLElement, HTMLElement>();
+    const lockOverlays = new Map<HTMLElement, HTMLElement>();
+    const messageOverlays = new Map<HTMLElement, HTMLElement>();
 
     const scene = new THREE.Scene();
     const roomEnvironment = new RoomEnvironment();
@@ -166,6 +168,7 @@ export default function LiveDice3DLayer({ onReady }: { onReady: () => void }): R
 
       let renderedAny = false;
       const visibleBadges = new Set<HTMLElement>();
+      const visibleLocks = new Set<HTMLElement>();
       const targets = Array.from(document.querySelectorAll<HTMLElement>(LIVE_DIE_SELECTOR));
       const rerollTray = document.querySelector<HTMLElement>(".floating-reroll-tray");
       const rerollTrayRect = rerollTray?.getBoundingClientRect();
@@ -196,7 +199,16 @@ export default function LiveDice3DLayer({ onReady }: { onReady: () => void }): R
           Math.max(0, Math.min(height - 1, centerY))
         );
         const coveredOnlyByLoader = Boolean(hit?.closest(".dice-render-loader"));
-        if (!isFloatingDie && !coveredOnlyByLoader && hit && hit !== target && !target.contains(hit) && !hit.contains(target)) continue;
+        const coveredOnlyByTurnPrompt = Boolean(hit?.closest(".turn-start-backdrop"));
+        if (
+          !isFloatingDie
+          && !coveredOnlyByLoader
+          && !coveredOnlyByTurnPrompt
+          && hit
+          && hit !== target
+          && !target.contains(hit)
+          && !hit.contains(target)
+        ) continue;
 
         const explicitColor = target.dataset.liveDieColor as PlayerColor | undefined;
         const color = explicitColor ?? playerColorForOwner(target.dataset.liveDieOwner ?? "p1");
@@ -260,12 +272,69 @@ export default function LiveDice3DLayer({ onReady }: { onReady: () => void }): R
           overlayBadge.style.transform = `translate(-50%, -50%) rotate(${facingDegrees}deg)`;
           visibleBadges.add(target);
         }
+
+        const sourceLock = target.querySelector<HTMLElement>(":scope > .die-lock-icon");
+        if (sourceLock) {
+          let overlayLock = lockOverlays.get(target);
+          if (!overlayLock) {
+            overlayLock = sourceLock.cloneNode(true) as HTMLElement;
+            overlayLock.classList.add("live-die-lock-icon");
+            badgeLayer.appendChild(overlayLock);
+            lockOverlays.set(target, overlayLock);
+          }
+
+          const lockRect = sourceLock.getBoundingClientRect();
+          const facingDegrees = tabletopFacingAngle(target) * (180 / Math.PI);
+          overlayLock.style.left = `${lockRect.left + lockRect.width / 2}px`;
+          overlayLock.style.top = `${lockRect.top + lockRect.height / 2}px`;
+          overlayLock.style.width = `${sourceLock.offsetWidth}px`;
+          overlayLock.style.height = `${sourceLock.offsetHeight}px`;
+          overlayLock.style.transform = `translate(-50%, -50%) rotate(${facingDegrees}deg)`;
+          visibleLocks.add(target);
+        }
       }
 
       for (const [target, overlayBadge] of badgeOverlays) {
         if (!visibleBadges.has(target)) {
           overlayBadge.remove();
           badgeOverlays.delete(target);
+        }
+      }
+      for (const [target, overlayLock] of lockOverlays) {
+        if (!visibleLocks.has(target)) {
+          overlayLock.remove();
+          lockOverlays.delete(target);
+        }
+      }
+
+      const visibleMessages = new Set<HTMLElement>();
+      const sourceMessages = Array.from(document.querySelectorAll<HTMLElement>(
+        ".board-grid > .completion-bonus-pop"
+      ));
+      for (const sourceMessage of sourceMessages) {
+        let overlayMessage = messageOverlays.get(sourceMessage);
+        if (!overlayMessage) {
+          overlayMessage = sourceMessage.cloneNode(true) as HTMLElement;
+          overlayMessage.classList.add("live-board-message");
+          const sourceAnimationTime = sourceMessage.getAnimations()[0]?.currentTime;
+          if (typeof sourceAnimationTime === "number") {
+            overlayMessage.style.animationDelay = `-${sourceAnimationTime}ms`;
+          }
+          badgeLayer.appendChild(overlayMessage);
+          messageOverlays.set(sourceMessage, overlayMessage);
+        }
+
+        const messageRect = sourceMessage.getBoundingClientRect();
+        overlayMessage.style.left = `${messageRect.left + messageRect.width / 2}px`;
+        overlayMessage.style.top = `${messageRect.top + messageRect.height / 2}px`;
+        overlayMessage.style.width = `${sourceMessage.offsetWidth}px`;
+        overlayMessage.style.height = `${sourceMessage.offsetHeight}px`;
+        visibleMessages.add(sourceMessage);
+      }
+      for (const [sourceMessage, overlayMessage] of messageOverlays) {
+        if (!visibleMessages.has(sourceMessage)) {
+          overlayMessage.remove();
+          messageOverlays.delete(sourceMessage);
         }
       }
 
@@ -284,6 +353,8 @@ export default function LiveDice3DLayer({ onReady }: { onReady: () => void }): R
       document.documentElement.classList.remove("live-dice-3d-ready");
       document.documentElement.classList.remove("live-dice-3d-overlay-ready");
       badgeOverlays.clear();
+      lockOverlays.clear();
+      messageOverlays.clear();
       badgeLayer.remove();
       geometry.dispose();
       resources.forEach((resource) => resource.dispose());

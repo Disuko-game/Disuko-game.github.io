@@ -1867,7 +1867,7 @@ p {
 .turn-start-backdrop {
   position: fixed;
   inset: 0;
-  z-index: 21;
+  z-index: 90;
   display: grid;
   place-items: center;
   background: rgba(26, 10, 4, 0.34);
@@ -3680,8 +3680,31 @@ select:focus-visible {
   transform-origin: center;
 }
 
-.live-dice-3d-overlay-ready .die-face[data-live-die-3d="true"] > .die-multiplier {
+.live-die-lock-icon {
+  position: fixed;
+  top: auto;
+  right: auto;
+  z-index: 1;
+  box-sizing: border-box;
+  margin: 0;
+  transform-origin: center;
+}
+
+.live-board-message {
+  position: fixed;
+  z-index: 2;
+  min-width: 0;
+  margin: 0;
+  transform-origin: center;
+}
+
+.live-dice-3d-overlay-ready .die-face[data-live-die-3d="true"] > .die-multiplier,
+.live-dice-3d-overlay-ready .die-face[data-live-die-3d="true"] > .die-lock-icon {
   opacity: 0;
+}
+
+.live-dice-3d-overlay-ready .board-grid > .completion-bonus-pop {
+  opacity: 0 !important;
 }
 
 .die-face[data-live-die-3d="true"] .die-face-depth,
