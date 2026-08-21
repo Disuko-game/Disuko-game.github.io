@@ -172,6 +172,32 @@ describe("Disuko bots", () => {
     expect(offBoardDice(game, "p1")).toHaveLength(2);
   });
 
+  it("has hard move into a spatial completion before refilling a high-value vacancy", () => {
+    const game = actionBankGame("hard-action-bank");
+    const sourceDie = getDieAt(game, 0, 0);
+    const replacementDie = offBoardDice(game, "p1").find((die) => die.value === 1);
+
+    expect(sourceDie?.value).toBe(1);
+    expect(replacementDie).toBeDefined();
+
+    const setup = chooseBotAction(game, "hard");
+
+    expect(setup).toEqual({ type: "move", dieId: sourceDie?.id, row: 4, col: 5 });
+
+    const afterSetup = applyBotAction(game, setup);
+    expect(afterSetup.lastAction?.completedKeys).toContain("row:4");
+    expect(afterSetup.actionCredits).toBe(1);
+
+    const replacement = chooseBotAction(afterSetup, "hard");
+    expect(replacement).toEqual({ type: "place", dieId: replacementDie?.id, row: 0, col: 0 });
+
+    const afterReplacement = applyBotAction(afterSetup, replacement);
+    expect(afterReplacement.lastAction?.completedKeys).toEqual(
+      expect.arrayContaining(["row:0", "column:0", "box:0"])
+    );
+    expect(afterReplacement.actionCredits).toBe(3);
+  });
+
   it("forces a safe handoff when the bot-turn action guard is reached", () => {
     const game = comboGame("bot-turn-guard");
     const result = runBotTurn(game, { difficulty: "medium", maxActions: 1 });
@@ -244,6 +270,33 @@ function comboGame(seed: string): GameState {
     die.value = (col + 1) as DiceValue;
     die.row = 0;
     die.col = col;
+  });
+
+  return game;
+}
+
+function actionBankGame(seed: string): GameState {
+  const game = newGame({ playerCount: 3, seed });
+  const playerOneDice = game.dice.filter((die) => die.ownerId === "p1");
+  const trayDice = playerOneDice.slice(0, 2);
+  const boardDice = game.dice.filter((die) => !trayDice.includes(die)).slice(0, 17);
+  const occupied = new Map<string, DiceValue>();
+
+  for (let col = 0; col < 6; col += 1) occupied.set(`0:${col}`, validBoard[0][col]);
+  for (let row = 1; row < 6; row += 1) occupied.set(`${row}:0`, validBoard[row][0]);
+  occupied.set("1:1", validBoard[1][1]);
+  occupied.set("2:1", validBoard[2][1]);
+  for (let col = 1; col < 5; col += 1) occupied.set(`4:${col}`, validBoard[4][col]);
+
+  expect(occupied.size).toBe(17);
+  game.dice = [...trayDice, ...boardDice];
+  trayDice[0].value = 1;
+  trayDice[1].value = 3;
+  [...occupied.entries()].forEach(([cell, value], index) => {
+    const [row, col] = cell.split(":").map(Number);
+    boardDice[index].value = value;
+    boardDice[index].row = row;
+    boardDice[index].col = col;
   });
 
   return game;

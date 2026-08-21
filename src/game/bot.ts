@@ -53,6 +53,10 @@ const HARD_NODE_BEAM = 2;
 const HARD_HANDOFF_DEPTH = 1;
 const HARD_ACTION_DEPTH = 4;
 const HARD_NODE_BUDGET = 12;
+const HARD_ACTION_BANK_MAX_MOVES = 5;
+const HARD_ACTION_BANK_CREDIT_VALUE = 16_000;
+const HARD_ACTION_BANK_MOVE_COST = 500;
+const HARD_ACTION_BANK_MIN_ADVANTAGE = 1_000;
 const DEFAULT_MAX_TURN_ACTIONS = 64;
 const WIN_SCORE = 1_000_000_000;
 
@@ -273,6 +277,11 @@ function chooseChallenge(
 
 function chooseHardAction(state: GameState, actions: BotAction[]): BotAction {
   const rootPlayerId = currentPlayer(state).id;
+  const actionBankSetup = chooseHardActionBankSetup(state, actions, rootPlayerId);
+
+  if (actionBankSetup) {
+    return actionBankSetup;
+  }
   const rootCandidates = rankedActionsForActor(state, actions, rootPlayerId, HARD_ROOT_PREFILTER, true).slice(
     0,
     HARD_ROOT_BEAM
@@ -297,6 +306,171 @@ function chooseHardAction(state: GameState, actions: BotAction[]): BotAction {
   });
 
   return chooseHighestScored(state, scored, "hard-choice");
+}
+
+interface HardActionBankPlan {
+  firstAction: Extract<BotAction, { type: "move" }>;
+  finalState: GameState;
+  moveCount: number;
+  utility: number;
+}
+
+/**
+ * Finds the hard-only "bank actions" tactic: move a board die into a spatial
+ * completion, follow the newly emptied square through any further completing
+ * moves, then place a tray die into the final vacancy. This lets the bot break
+ * completed spatial units and earn them again when it refills that square.
+ */
+function chooseHardActionBankSetup(
+  state: GameState,
+  actions: BotAction[],
+  playerId: string
+): Extract<BotAction, { type: "move" }> | undefined {
+  const directPlacementStates = actions
+    .filter((action): action is Extract<BotAction, { type: "place" }> => action.type === "place")
+    .map((action) => applyBotAction(state, action));
+
+  if (directPlacementStates.some((next) => next.phase === "won" && next.winnerId === playerId)) {
+    return undefined;
+  }
+
+  const bestDirectUtility = directPlacementStates.reduce(
+    (best, next) => Math.max(best, hardActionBankUtility(next, playerId, 0)),
+    Number.NEGATIVE_INFINITY
+  );
+  const setupMoves = actions
+    .filter((action): action is Extract<BotAction, { type: "move" }> => action.type === "move")
+    .map((action) => {
+      const die = state.dice.find((candidate) => candidate.id === action.dieId);
+
+      if (!die || !isOnBoard(die)) {
+        return undefined;
+      }
+
+      const next = applyBotAction(state, action);
+
+      if (!retainsPlayerTurn(next, playerId) || spatialCompletionCount(next, playerId) === 0) {
+        return undefined;
+      }
+
+      const continuation = bestHardActionBankContinuation(
+        next,
+        playerId,
+        { row: die.row as number, col: die.col as number },
+        HARD_ACTION_BANK_MAX_MOVES - 1
+      );
+
+      if (!continuation) {
+        return undefined;
+      }
+
+      return {
+        firstAction: action,
+        finalState: continuation.finalState,
+        moveCount: continuation.moveCount + 1,
+        utility: hardActionBankUtility(continuation.finalState, playerId, continuation.moveCount + 1)
+      } satisfies HardActionBankPlan;
+    })
+    .filter((plan): plan is HardActionBankPlan => Boolean(plan))
+    .sort((left, right) => {
+      return right.utility - left.utility || actionKey(left.firstAction).localeCompare(actionKey(right.firstAction));
+    });
+  const bestPlan = setupMoves[0];
+
+  if (!bestPlan || bestPlan.utility < bestDirectUtility + HARD_ACTION_BANK_MIN_ADVANTAGE) {
+    return undefined;
+  }
+
+  return bestPlan.firstAction;
+}
+
+function bestHardActionBankContinuation(
+  state: GameState,
+  playerId: string,
+  vacancy: { row: number; col: number },
+  movesRemaining: number
+): { finalState: GameState; moveCount: number; utility: number } | undefined {
+  const candidates = legalBotActions(state)
+    .filter((action): action is Extract<BotAction, { type: "place" | "move" }> => {
+      return (action.type === "place" || action.type === "move")
+        && action.row === vacancy.row
+        && action.col === vacancy.col;
+    })
+    .map((action) => {
+      const movingDie = action.type === "move"
+        ? state.dice.find((die) => die.id === action.dieId)
+        : undefined;
+      const next = applyBotAction(state, action);
+      return { action, movingDie, next, completions: spatialCompletionCount(next, playerId) };
+    })
+    .filter(({ next, completions }) => {
+      return completions > 0 && (next.phase === "won" || retainsPlayerTurn(next, playerId));
+    })
+    .sort((left, right) => {
+      return right.completions - left.completions || actionKey(left.action).localeCompare(actionKey(right.action));
+    });
+  let best: { finalState: GameState; moveCount: number; utility: number } | undefined;
+
+  for (const candidate of candidates) {
+    if (candidate.action.type === "place") {
+      const utility = hardActionBankUtility(candidate.next, playerId, 0);
+
+      if (!best || utility > best.utility) {
+        best = { finalState: candidate.next, moveCount: 0, utility };
+      }
+      continue;
+    }
+
+    if (movesRemaining <= 0 || !candidate.movingDie || !isOnBoard(candidate.movingDie)) {
+      continue;
+    }
+
+    const continuation = bestHardActionBankContinuation(
+      candidate.next,
+      playerId,
+      { row: candidate.movingDie.row as number, col: candidate.movingDie.col as number },
+      movesRemaining - 1
+    );
+
+    if (!continuation) {
+      continue;
+    }
+
+    const moveCount = continuation.moveCount + 1;
+    const utility = hardActionBankUtility(continuation.finalState, playerId, moveCount);
+
+    if (!best || utility > best.utility) {
+      best = { finalState: continuation.finalState, moveCount, utility };
+    }
+  }
+
+  return best;
+}
+
+function hardActionBankUtility(state: GameState, playerId: string, moveCount: number): number {
+  const terminal = terminalStateScore(state, playerId);
+
+  if (terminal !== null) {
+    return terminal;
+  }
+
+  return evaluateHardState(state, playerId, true)
+    + state.actionCredits * HARD_ACTION_BANK_CREDIT_VALUE
+    - moveCount * HARD_ACTION_BANK_MOVE_COST;
+}
+
+function retainsPlayerTurn(state: GameState, playerId: string): boolean {
+  return state.phase === "playing" && currentPlayer(state).id === playerId && state.actionCredits > 0;
+}
+
+function spatialCompletionCount(state: GameState, playerId: string): number {
+  if (state.lastAction?.playerId !== playerId) {
+    return 0;
+  }
+
+  return state.lastAction.completedKeys.filter((key) => {
+    return key.startsWith("row:") || key.startsWith("column:") || key.startsWith("box:");
+  }).length;
 }
 
 function hardSearch(
