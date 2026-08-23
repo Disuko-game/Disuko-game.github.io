@@ -13,6 +13,8 @@ export const REROLL_TUMBLE_VARIANT_COUNT = 3;
 export const REROLL_MAX_DICE = 18;
 export const REROLL_SAMPLE_COMPONENTS = 7;
 export const REROLL_GATHER_DURATION_MS = 520;
+export const OPENING_ROLL_TUMBLE_DURATION_MS = 3600;
+export const OPENING_ROLL_GATHER_DURATION_MS = 360;
 
 const FRAME_RATE = 60;
 const FRAME_INTERVAL_SECONDS = 1 / FRAME_RATE;
@@ -57,6 +59,7 @@ interface SimulatedDie {
 }
 
 const templateCache = new Map<string, Promise<RerollTumbleTemplate>>();
+const openingTemplateCache = new Map<string, Promise<RerollTumbleTemplate>>();
 let rapierReady: Promise<RapierModule> | undefined;
 
 export function rerollVariantFromKey(key: string): number {
@@ -81,6 +84,25 @@ export function getRerollTumbleTemplate(count: number, variant: number): Promise
   return template;
 }
 
+export function getOpeningRollTumbleTemplate(
+  playerIndexes: number[],
+  variant: number
+): Promise<RerollTumbleTemplate> {
+  const safePlayerIndexes = playerIndexes
+    .slice(0, 4)
+    .map((playerIndex) => Math.max(0, Math.min(3, Math.floor(playerIndex))));
+  const safeVariant = ((Math.floor(variant) % REROLL_TUMBLE_VARIANT_COUNT) + REROLL_TUMBLE_VARIANT_COUNT)
+    % REROLL_TUMBLE_VARIANT_COUNT;
+  const cacheKey = `${safePlayerIndexes.join(",")}:${safeVariant}`;
+  const cached = openingTemplateCache.get(cacheKey);
+  if (cached) return cached;
+
+  const template = ensureRapierReady().then((rapier) => {
+    return createOpeningTemplate(rapier, safePlayerIndexes, safeVariant);
+  });
+  openingTemplateCache.set(cacheKey, template);
+  return template;
+}
 export async function preloadRerollPhysics(): Promise<void> {
   await ensureRapierReady();
 }
@@ -140,6 +162,61 @@ function createTemplate(RAPIER: RapierModule, count: number, variant: number): R
   return { count, variant, durationMs: REROLL_TUMBLE_DURATION_MS, frameRate: FRAME_RATE, frameCount, tracks };
 }
 
+function createOpeningTemplate(
+  RAPIER: RapierModule,
+  playerIndexes: number[],
+  variant: number
+): RerollTumbleTemplate {
+  const frameCount = Math.ceil((OPENING_ROLL_TUMBLE_DURATION_MS / 1000) * FRAME_RATE) + 1;
+  const tracks = playerIndexes.map((): RerollTumbleTrack => ({
+    samples: new Float32Array(frameCount * REROLL_SAMPLE_COMPONENTS),
+    settleTimeMs: OPENING_ROLL_TUMBLE_DURATION_MS,
+    impacts: []
+  }));
+  const random = mulberry32(mixOpeningSeed(playerIndexes, variant));
+  const world = new RAPIER.World({ x: 0, y: -13.8, z: 0 });
+  world.timestep = FRAME_INTERVAL_SECONDS;
+  world.maxCcdSubsteps = 8;
+  const eventQueue = new RAPIER.EventQueue(true);
+  const surfaceKindByCollider = createTrayColliders(RAPIER, world);
+  const dice = playerIndexes.map((playerIndex, index) => {
+    return createOpeningDie(RAPIER, world, playerIndex, index, random);
+  });
+  const dieIndexByCollider = new Map(dice.map((die, index) => [die.colliderHandle, index]));
+  const holdDurationSeconds = OPENING_ROLL_GATHER_DURATION_MS / 1000;
+
+  for (let frame = 0; frame < frameCount; frame += 1) {
+    dice.forEach((die, index) => {
+      writeSample(tracks[index].samples, frame, die.body);
+      updateSettleTime(die, tracks[index], frame, holdDurationSeconds);
+    });
+
+    if (frame === frameCount - 1) break;
+    if (frame * FRAME_INTERVAL_SECONDS < holdDurationSeconds) continue;
+    world.step(eventQueue);
+    drainImpactEvents(eventQueue, dieIndexByCollider, surfaceKindByCollider, tracks, frame + 1);
+  }
+
+  dice.forEach((die, index) => {
+    if (die.lastActiveFrame > 0) {
+      tracks[index].settleTimeMs = Math.min(
+        OPENING_ROLL_TUMBLE_DURATION_MS,
+        Math.round((die.lastActiveFrame / FRAME_RATE) * 1000)
+      );
+    }
+  });
+  eventQueue.free();
+  world.free();
+
+  return {
+    count: playerIndexes.length,
+    variant,
+    durationMs: OPENING_ROLL_TUMBLE_DURATION_MS,
+    frameRate: FRAME_RATE,
+    frameCount,
+    tracks
+  };
+}
 function createTrayColliders(RAPIER: RapierModule, world: World): Map<number, RerollImpactKind> {
   const surfaceKindByCollider = new Map<number, RerollImpactKind>();
   const surface = (description: ColliderDesc, kind: RerollImpactKind) => {
@@ -218,6 +295,61 @@ function createSimulatedDie(
   return { body, colliderHandle: collider.handle, lastActiveFrame: 0, settledFrames: 0 };
 }
 
+function createOpeningDie(
+  RAPIER: RapierModule,
+  world: World,
+  playerIndex: number,
+  rollIndex: number,
+  random: () => number
+): SimulatedDie {
+  const corners = [
+    { x: 3.62, z: 3.62 },
+    { x: -3.62, z: -3.62 },
+    { x: 3.62, z: -3.62 },
+    { x: -3.62, z: 3.62 }
+  ];
+  const corner = corners[playerIndex] ?? corners[rollIndex % corners.length];
+  const targetX = (random() - 0.5) * 1.25;
+  const targetZ = (random() - 0.5) * 1.25;
+  const travelScale = 2.05 + random() * 0.28;
+  const body = world.createRigidBody(
+    RAPIER.RigidBodyDesc.dynamic()
+      .setTranslation(corner.x, 1.35 + random() * 0.42, corner.z)
+      .setRotation(randomQuaternion(random))
+      .setLinvel(
+        (targetX - corner.x) * travelScale,
+        3.8 + random() * 1.25,
+        (targetZ - corner.z) * travelScale
+      )
+      .setAngvel({
+        x: (random() - 0.5) * 24,
+        y: (random() - 0.5) * 27,
+        z: (random() - 0.5) * 24
+      })
+      .setLinearDamping(0.17 + random() * 0.04)
+      .setAngularDamping(0.34 + random() * 0.06)
+      .setCanSleep(true)
+      .setCcdEnabled(true)
+      .setAdditionalSolverIterations(10)
+  );
+  const collider = world.createCollider(
+    RAPIER.ColliderDesc.roundCuboid(
+      DIE_CORE_HALF_SIZE,
+      DIE_CORE_HALF_SIZE,
+      DIE_CORE_HALF_SIZE,
+      DIE_BORDER_RADIUS
+    )
+      .setDensity(1.08)
+      .setFriction(0.48)
+      .setRestitution(0.38)
+      .setFrictionCombineRule(RAPIER.CoefficientCombineRule.Average)
+      .setRestitutionCombineRule(RAPIER.CoefficientCombineRule.Average)
+      .setActiveEvents(RAPIER.ActiveEvents.CONTACT_FORCE_EVENTS)
+      .setContactForceEventThreshold(0.42),
+    body
+  );
+  return { body, colliderHandle: collider.handle, lastActiveFrame: 0, settledFrames: 0 };
+}
 function drainImpactEvents(
   eventQueue: EventQueue,
   dieIndexByCollider: Map<number, number>,
@@ -250,8 +382,13 @@ function pushImpact(events: RerollImpactEvent[], event: RerollImpactEvent): void
   events.push(event);
 }
 
-function updateSettleTime(die: SimulatedDie, track: RerollTumbleTrack, frame: number): void {
-  if (frame / FRAME_RATE < HOLD_DURATION_SECONDS) return;
+function updateSettleTime(
+  die: SimulatedDie,
+  track: RerollTumbleTrack,
+  frame: number,
+  holdDurationSeconds = HOLD_DURATION_SECONDS
+): void {
+  if (frame / FRAME_RATE < holdDurationSeconds) return;
   const linear = die.body.linvel();
   const angular = die.body.angvel();
   const linearSpeed = Math.hypot(linear.x, linear.y, linear.z);
@@ -302,6 +439,14 @@ function mixSeed(count: number, variant: number): number {
   return seed >>> 0;
 }
 
+function mixOpeningSeed(playerIndexes: number[], variant: number): number {
+  let seed = Math.imul(variant + 29, 0x9e3779b1);
+  playerIndexes.forEach((playerIndex, index) => {
+    seed ^= Math.imul(playerIndex + 11 + index * 7, 0x85ebca6b);
+    seed = Math.imul(seed ^ (seed >>> 13), 0xc2b2ae35);
+  });
+  return seed >>> 0;
+}
 function mulberry32(seed: number): () => number {
   let state = seed >>> 0;
   return () => {

@@ -83,7 +83,7 @@ describe("Disuko multiplayer mapping", () => {
   });
 
   it("maps the active engine player to the seated Supabase profile", () => {
-    const game = newGame({ playerCount: 2, seed: "turns" });
+    const game = newGame({ skipOpeningRoll: true, playerCount: 2, seed: "turns" });
     const nextTurn = endAction(game);
 
     expect(turnProfileIdForGame(roomPlayers(), game)).toBe("profile-1");
@@ -91,7 +91,7 @@ describe("Disuko multiplayer mapping", () => {
   });
 
   it("increments state version and advances the turn profile for optimistic commits", () => {
-    const game = newGame({ playerCount: 2, seed: "commit" });
+    const game = newGame({ skipOpeningRoll: true, playerCount: 2, seed: "commit" });
     const nextTurn = endAction(game);
     const optimistic = optimisticRoomAfterGameCommit(room(game), roomPlayers(), "profile-1", nextTurn);
 
@@ -101,7 +101,7 @@ describe("Disuko multiplayer mapping", () => {
   });
 
   it("marks a won game finished and keeps the winner as the turn profile", () => {
-    const game = newGame({ playerCount: 2, seed: "won" });
+    const game = newGame({ skipOpeningRoll: true, playerCount: 2, seed: "won" });
     const wonGame: GameState = {
       ...game,
       phase: "won",
@@ -115,7 +115,7 @@ describe("Disuko multiplayer mapping", () => {
   });
 
   it("labels current rooms by async turn state", () => {
-    const game = newGame({ playerCount: 2, seed: "current-rooms" });
+    const game = newGame({ skipOpeningRoll: true, playerCount: 2, seed: "current-rooms" });
     const playingRoom = room(game);
 
     expect(currentRoomStatus(playingRoom, "profile-1")).toBe("your-turn");
@@ -145,7 +145,7 @@ describe("Disuko multiplayer mapping", () => {
   it("maps bot turns to the host controller without labeling them as the host's turn", () => {
     const players = [roomPlayers()[0]];
     const bots = roomBots();
-    const game = newGame({
+    const game = newGame({ skipOpeningRoll: true,
       playerCount: 2,
       seed: "bot-controller",
       playerControllers: [{ kind: "human" }, { kind: "bot", difficulty: "hard" }]

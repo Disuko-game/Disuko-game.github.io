@@ -6,6 +6,7 @@ import type { DiceValue, PlayerColor } from "./game/types";
 import {
   REROLL_GATHER_DURATION_MS,
   REROLL_SAMPLE_COMPONENTS,
+  getOpeningRollTumbleTemplate,
   getRerollTumbleTemplate,
   type RerollImpactEvent,
   type RerollTumbleTemplate
@@ -15,6 +16,8 @@ export interface Reroll3DDie {
   id: string;
   initialValue: DiceValue;
   finalValue: DiceValue;
+  playerColor?: PlayerColor;
+  playerIndex?: number;
 }
 
 export const COLOR_BY_PLAYER: Record<PlayerColor, string> = {
@@ -46,22 +49,31 @@ export default function RerollDice3D({
   playerColor,
   variant,
   launchSide = "bottom",
+  openingPlayerIndexes,
+  onSettled,
   onSettledCenters
 }: {
   dice: Reroll3DDie[];
   playerColor: PlayerColor;
   variant: number;
   launchSide?: "top" | "right" | "bottom" | "left";
+  openingPlayerIndexes?: number[];
+  onSettled?: () => void;
   onSettledCenters?: (centers: Record<string, { x: number; y: number }>) => void;
 }): ReactElement {
   const hostRef = useRef<HTMLDivElement | null>(null);
   const [webGlFailed, setWebGlFailed] = useState(false);
   const [sceneReady, setSceneReady] = useState(false);
+  const onSettledRef = useRef(onSettled);
   const onSettledCentersRef = useRef(onSettledCenters);
+  onSettledRef.current = onSettled;
   onSettledCentersRef.current = onSettledCenters;
+  const openingPlayerIndexesSignature = openingPlayerIndexes?.join(",") ?? "";
   const diceSignature = useMemo(
-    () => dice.map((die) => `${die.id}:${die.initialValue}>${die.finalValue}`).join("|"),
-    [dice]
+    () => dice.map((die) => {
+      return `${die.id}:${die.initialValue}>${die.finalValue}:${die.playerColor ?? playerColor}:${die.playerIndex ?? "reroll"}`;
+    }).join("|"),
+    [dice, playerColor]
   );
 
 
@@ -75,9 +87,14 @@ export default function RerollDice3D({
     void (async () => {
       let template: RerollTumbleTemplate;
       try {
-        template = await getRerollTumbleTemplate(dice.length, variant);
+        template = openingPlayerIndexes
+          ? await getOpeningRollTumbleTemplate(openingPlayerIndexes, variant)
+          : await getRerollTumbleTemplate(dice.length, variant);
       } catch {
-        if (!disposed) setWebGlFailed(true);
+        if (!disposed) {
+          setWebGlFailed(true);
+          onSettledRef.current?.();
+        }
         return;
       }
       if (disposed) return;
@@ -91,6 +108,7 @@ export default function RerollDice3D({
       });
     } catch {
       setWebGlFailed(true);
+      onSettledRef.current?.();
       return;
     }
 
@@ -155,11 +173,13 @@ export default function RerollDice3D({
     scene.add(floor);
 
 
-    const faceResources = createDieFaceResources(playerColor);
-    const faceMaterials = faceResources.materials;
+    const dieColors = [...new Set(dice.map((die) => die.playerColor ?? playerColor))];
+    const faceResources = new Map(dieColors.map((color) => [color, createDieFaceResources(color)]));
     const dieGeometry = createDieGeometry();
-    const meshes = dice.map(() => {
-      const mesh = new THREE.Mesh(dieGeometry, faceMaterials);
+    const meshes = dice.map((die) => {
+      const materials = faceResources.get(die.playerColor ?? playerColor)?.materials
+        ?? faceResources.values().next().value?.materials;
+      const mesh = new THREE.Mesh(dieGeometry, materials);
       mesh.castShadow = true;
       mesh.receiveShadow = true;
       scene.add(mesh);
@@ -194,7 +214,7 @@ export default function RerollDice3D({
         end: orientationCorrection(baseEnd, finalDieQuaternion(die.finalValue, variant, index))
       };
     });
-    const launchRotation = launchRotationForSide(launchSide);
+    const launchRotation = openingPlayerIndexes ? 0 : launchRotationForSide(launchSide);
     const launchAxis = new THREE.Vector3(0, 1, 0);
     const launchQuaternion = new THREE.Quaternion().setFromAxisAngle(launchAxis, launchRotation);
     const localPosition = new THREE.Vector3();
@@ -241,12 +261,9 @@ export default function RerollDice3D({
           THREE.MathUtils.lerp(track.samples[lowerOffset + 1], track.samples[upperOffset + 1], frameMix),
           THREE.MathUtils.lerp(track.samples[lowerOffset + 2], track.samples[upperOffset + 2], frameMix)
         );
-        const gather = gatherPresentation(
-          sampleElapsedMs,
-          index,
-          dice.length,
-          localPosition
-        );
+        const gather = openingPlayerIndexes
+          ? { x: localPosition.x, y: localPosition.y, z: localPosition.z }
+          : gatherPresentation(sampleElapsedMs, index, dice.length, localPosition);
         localPosition.set(gather.x, gather.y, gather.z);
         mesh.position.copy(localPosition).applyAxisAngle(launchAxis, launchRotation);
         lowerQuaternion.fromArray(track.samples, lowerOffset + 3).normalize();
@@ -292,6 +309,7 @@ export default function RerollDice3D({
         }));
         reportedSettledCenters = true;
         onSettledCentersRef.current?.(centers);
+        onSettledRef.current?.();
       }
 
       renderer.render(scene, camera);
@@ -313,7 +331,7 @@ export default function RerollDice3D({
       shadowMaterials.forEach((material) => material.dispose());
       floorGeometry.dispose();
       floorMaterial.dispose();
-      faceResources.dispose();
+      faceResources.forEach((resource) => resource.dispose());
 
       environmentTarget.dispose();
       pmremGenerator.dispose();
@@ -328,7 +346,7 @@ export default function RerollDice3D({
       disposed = true;
       disposeScene?.();
     };
-  }, [diceSignature, launchSide, playerColor, variant]);
+  }, [diceSignature, launchSide, openingPlayerIndexesSignature, playerColor, variant]);
 
   return (
     <div className="reroll-3d-stage" ref={hostRef} aria-hidden="true">
@@ -340,8 +358,8 @@ export default function RerollDice3D({
               key={die.id}
               data-live-die-3d="true"
               data-live-die-value={die.initialValue}
-              data-live-die-color={playerColor}
-              style={{ "--fallback-die-color": COLOR_BY_PLAYER[playerColor] } as React.CSSProperties}
+              data-live-die-color={die.playerColor ?? playerColor}
+              style={{ "--fallback-die-color": COLOR_BY_PLAYER[die.playerColor ?? playerColor] } as React.CSSProperties}
             >
               {die.initialValue}
             </span>
@@ -351,7 +369,7 @@ export default function RerollDice3D({
       {webGlFailed ? (
         <div className="reroll-3d-fallback">
           {dice.map((die) => (
-            <span key={die.id} style={{ "--fallback-die-color": COLOR_BY_PLAYER[playerColor] } as React.CSSProperties}>
+            <span key={die.id} style={{ "--fallback-die-color": COLOR_BY_PLAYER[die.playerColor ?? playerColor] } as React.CSSProperties}>
               {die.finalValue}
             </span>
           ))}

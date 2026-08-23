@@ -1,11 +1,13 @@
 import { describe, expect, it } from "vitest";
 import {
+  OPENING_ROLL_TUMBLE_DURATION_MS,
   REROLL_MAX_DICE,
   REROLL_DIE_HALF_SIZE,
   REROLL_SAMPLE_COMPONENTS,
   REROLL_TRAY_HALF_EXTENT,
   REROLL_TUMBLE_DURATION_MS,
   REROLL_TUMBLE_VARIANT_COUNT,
+  getOpeningRollTumbleTemplate,
   getRerollTumbleTemplate,
   rerollVariantFromKey
 } from "./rerollTumbles";
@@ -147,6 +149,32 @@ describe("Rapier reroll tumble templates", () => {
     }
   }, 20_000);
 
+  it("throws opening dice inward from each player's corner with shared collision physics", async () => {
+    const template = await getOpeningRollTumbleTemplate([0, 1, 2, 3], 1);
+    const initialPositions = template.tracks.map((track) => ({ x: track.samples[0], z: track.samples[2] }));
+    const expectedSigns = [
+      { x: 1, z: 1 },
+      { x: -1, z: -1 },
+      { x: 1, z: -1 },
+      { x: -1, z: 1 }
+    ];
+
+    expect(template.durationMs).toBe(OPENING_ROLL_TUMBLE_DURATION_MS);
+    expect(template.tracks).toHaveLength(4);
+    initialPositions.forEach((position, index) => {
+      expect(Math.sign(position.x)).toBe(expectedSigns[index].x);
+      expect(Math.sign(position.z)).toBe(expectedSigns[index].z);
+    });
+
+    const middleFrame = Math.floor(template.frameRate * 1.15);
+    template.tracks.forEach((track, index) => {
+      const offset = middleFrame * REROLL_SAMPLE_COMPONENTS;
+      expect(Math.hypot(track.samples[offset], track.samples[offset + 2])).toBeLessThan(
+        Math.hypot(initialPositions[index].x, initialPositions[index].z)
+      );
+    });
+    expect(template.tracks.some((track) => track.impacts.some((impact) => impact.kind === "die"))).toBe(true);
+  });
   it("chooses variants deterministically without collapsing every roll to one pattern", () => {
     const keys = Array.from({ length: 24 }, (_, index) => "roll:" + index);
     const variants = keys.map(rerollVariantFromKey);

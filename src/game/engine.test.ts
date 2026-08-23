@@ -3,6 +3,7 @@ import {
   boardDiceForPlayer,
   calculateCompletionKeys,
   challengeViolation,
+  completeOpeningRoll,
   detectConflicts,
   diceCountForPlayerCount,
   endAction,
@@ -39,7 +40,7 @@ describe("Disuko rules engine", () => {
     expect(diceCountForPlayerCount(2)).toBe(18);
     expect(diceCountForPlayerCount(3)).toBe(12);
     expect(diceCountForPlayerCount(4)).toBe(9);
-    const game = newGame({ playerCount: 4, seed: "counts" });
+    const game = newGame({ skipOpeningRoll: true, playerCount: 4, seed: "counts" });
     expect(game.dice).toHaveLength(36);
     expect(game.players.map((player) => player.name)).toEqual([
       "Player 1",
@@ -49,9 +50,49 @@ describe("Disuko rules engine", () => {
     ]);
   });
 
+  it("rolls every player for first turn and rerolls only tied leaders", () => {
+    const game = newGame({ playerCount: 4, seed: "opening-roll" });
+    const repeated = newGame({ playerCount: 4, seed: "opening-roll" });
+    const tiedGame = Array.from({ length: 100 }, (_, index) => {
+      return newGame({ playerCount: 4, seed: `opening-tie-${index}` });
+    }).find((candidate) => (candidate.openingRoll?.rounds.length ?? 0) > 1);
+
+    expect(game.phase).toBe("opening");
+    expect(game.openingRoll?.rounds[0].rolls.map(({ playerId }) => playerId)).toEqual(
+      game.players.map((player) => player.id)
+    );
+    expect(repeated.openingRoll).toEqual(game.openingRoll);
+    expect(tiedGame).toBeDefined();
+
+    tiedGame?.openingRoll?.rounds.forEach((round, index, rounds) => {
+      const highRoll = Math.max(...round.rolls.map(({ value }) => value));
+      const leaders = round.rolls.filter(({ value }) => value === highRoll).map(({ playerId }) => playerId);
+      const nextRound = rounds[index + 1];
+
+      if (nextRound) {
+        expect(nextRound.rolls.map(({ playerId }) => playerId).sort()).toEqual([...leaders].sort());
+      } else {
+        expect(leaders).toEqual([tiedGame.openingRoll?.winnerPlayerId]);
+      }
+    });
+
+    expect(game.players[game.currentPlayerIndex].id).toBe(game.openingRoll?.winnerPlayerId);
+    const winnerId = game.players[game.currentPlayerIndex].id;
+    const winnerDie = game.dice.find((die) => die.ownerId === winnerId);
+    expect(winnerDie).toBeDefined();
+    const blockedMove = placeDie(game, winnerDie?.id ?? "missing", 0, 0);
+    expect(blockedMove.dice.find((die) => die.id === winnerDie?.id)?.row).toBeNull();
+    expect(restoreGame(serializeGame(game)).openingRoll).toEqual(game.openingRoll);
+
+    const started = completeOpeningRoll(game);
+    expect(started.phase).toBe("playing");
+    expect(started.currentPlayerIndex).toBe(game.currentPlayerIndex);
+    expect(started.rngState).toBe(game.rngState);
+    expect(game.phase).toBe("opening");
+  });
   it("defaults tabletop mode off and persists the setup choice", () => {
-    const standardGame = newGame({ playerCount: 2, seed: "standard-mode" });
-    const tabletopGame = newGame({ playerCount: 4, seed: "tabletop-mode", tabletopMode: true });
+    const standardGame = newGame({ skipOpeningRoll: true, playerCount: 2, seed: "standard-mode" });
+    const tabletopGame = newGame({ skipOpeningRoll: true, playerCount: 4, seed: "tabletop-mode", tabletopMode: true });
     const legacySave = JSON.parse(serializeGame(standardGame)) as Record<string, unknown>;
 
     delete legacySave.tabletopMode;
@@ -63,7 +104,7 @@ describe("Disuko rules engine", () => {
   });
 
   it("detects row, column, and 2x3 box conflicts already on the board", () => {
-    const game = newGame({ playerCount: 2, seed: "conflicts" });
+    const game = newGame({ skipOpeningRoll: true, playerCount: 2, seed: "conflicts" });
     const [first, second] = game.dice.filter((die) => die.ownerId === "p1");
     first.value = 4;
     first.row = 0;
@@ -79,7 +120,7 @@ describe("Disuko rules engine", () => {
   });
 
   it("reports row, column, and 2x3 box conflicts before an off-board die is placed", () => {
-    const game = newGame({ playerCount: 2, seed: "would-conflict" });
+    const game = newGame({ skipOpeningRoll: true, playerCount: 2, seed: "would-conflict" });
     const [placedDie, trayDie] = game.dice.filter((die) => die.ownerId === "p1");
 
     placedDie.value = 2;
@@ -94,7 +135,7 @@ describe("Disuko rules engine", () => {
   });
 
   it("reports conflicts before a board die is moved", () => {
-    const game = newGame({ playerCount: 2, seed: "would-move-conflict" });
+    const game = newGame({ skipOpeningRoll: true, playerCount: 2, seed: "would-move-conflict" });
     const [placedDie, movingDie] = game.dice.filter((die) => die.ownerId === "p1");
 
     placedDie.value = 2;
@@ -111,7 +152,7 @@ describe("Disuko rules engine", () => {
   });
 
   it("auto-undoes an invalid placement and consumes that action", () => {
-    const game = newGame({ playerCount: 2, seed: "invalid-placement" });
+    const game = newGame({ skipOpeningRoll: true, playerCount: 2, seed: "invalid-placement" });
     const [placedDie, trayDie] = game.dice.filter((die) => die.ownerId === "p1");
 
     placedDie.value = 4;
@@ -137,7 +178,7 @@ describe("Disuko rules engine", () => {
   });
 
   it("spends one combo action on an invalid placement without passing the turn", () => {
-    const game = newGame({ playerCount: 2, seed: "invalid-combo-spend" });
+    const game = newGame({ skipOpeningRoll: true, playerCount: 2, seed: "invalid-combo-spend" });
     const [placedDie, trayDie] = game.dice.filter((die) => die.ownerId === "p1");
 
     game.actionCredits = 2;
@@ -157,7 +198,7 @@ describe("Disuko rules engine", () => {
   });
 
   it("auto-undoes an invalid move and consumes that action", () => {
-    const game = newGame({ playerCount: 2, seed: "invalid-move" });
+    const game = newGame({ skipOpeningRoll: true, playerCount: 2, seed: "invalid-move" });
     const [placedDie, movingDie] = game.dice.filter((die) => die.ownerId === "p1");
 
     placedDie.value = 4;
@@ -186,7 +227,7 @@ describe("Disuko rules engine", () => {
   });
 
   it("spends one combo action on an invalid move without passing the turn", () => {
-    const game = newGame({ playerCount: 2, seed: "invalid-move-combo-spend" });
+    const game = newGame({ skipOpeningRoll: true, playerCount: 2, seed: "invalid-move-combo-spend" });
     const [placedDie, movingDie] = game.dice.filter((die) => die.ownerId === "p1");
 
     game.actionCredits = 2;
@@ -208,7 +249,7 @@ describe("Disuko rules engine", () => {
   });
 
   it("awards a combo action when a row is completed", () => {
-    const game = newGame({ playerCount: 2, seed: "combo" });
+    const game = newGame({ skipOpeningRoll: true, playerCount: 2, seed: "combo" });
     const blueDice = game.dice.filter((die) => die.ownerId === "p1");
 
     blueDice.slice(0, 5).forEach((die, index) => {
@@ -227,7 +268,7 @@ describe("Disuko rules engine", () => {
   });
 
   it("awards combo actions for columns, boxes, and sixth value copies", () => {
-    const columnGame = newGame({ playerCount: 2, seed: "column-combo" });
+    const columnGame = newGame({ skipOpeningRoll: true, playerCount: 2, seed: "column-combo" });
     const columnDice = columnGame.dice.filter((die) => die.ownerId === "p1");
     columnDice.slice(0, 5).forEach((die, index) => {
       die.value = (index + 1) as typeof die.value;
@@ -241,7 +282,7 @@ describe("Disuko rules engine", () => {
     expect(afterColumn.completedKeys).toContain("column:0");
     expect(afterColumn.actionCredits).toBe(1);
 
-    const boxGame = newGame({ playerCount: 2, seed: "box-combo" });
+    const boxGame = newGame({ skipOpeningRoll: true, playerCount: 2, seed: "box-combo" });
     const boxDice = boxGame.dice.filter((die) => die.ownerId === "p1");
     cellsForBox(0)
       .slice(0, 5)
@@ -258,7 +299,7 @@ describe("Disuko rules engine", () => {
     expect(afterBox.completedKeys).toContain("box:0");
     expect(afterBox.actionCredits).toBe(1);
 
-    const valueGame = newGame({ playerCount: 2, seed: "value-combo" });
+    const valueGame = newGame({ skipOpeningRoll: true, playerCount: 2, seed: "value-combo" });
     const valueDice = valueGame.dice.filter((die) => die.ownerId === "p1");
     const valueCells = [
       { row: 0, col: 0 },
@@ -282,7 +323,7 @@ describe("Disuko rules engine", () => {
   });
 
   it("stacks combo actions when one placement completes a row and column", () => {
-    const game = newGame({ playerCount: 2, seed: "stacked-place-combo" });
+    const game = newGame({ skipOpeningRoll: true, playerCount: 2, seed: "stacked-place-combo" });
     const blueDice = game.dice.filter((die) => die.ownerId === "p1");
 
     blueDice.slice(0, 5).forEach((die, index) => {
@@ -308,7 +349,7 @@ describe("Disuko rules engine", () => {
   });
 
   it("stacks combo actions when one placement completes a row, column, and box", () => {
-    const game = newGame({ playerCount: 2, seed: "triple-place-combo" });
+    const game = newGame({ skipOpeningRoll: true, playerCount: 2, seed: "triple-place-combo" });
     const blueDice = game.dice.filter((die) => die.ownerId === "p1");
     const setupCells = [
       { row: 0, col: 0 },
@@ -340,7 +381,7 @@ describe("Disuko rules engine", () => {
   });
 
   it("awards a combo when a previously awarded row is completed again from incomplete", () => {
-    const game = newGame({ playerCount: 2, seed: "repeat-row-combo" });
+    const game = newGame({ skipOpeningRoll: true, playerCount: 2, seed: "repeat-row-combo" });
     const blueDice = game.dice.filter((die) => die.ownerId === "p1");
 
     blueDice.slice(0, 5).forEach((die, index) => {
@@ -361,7 +402,7 @@ describe("Disuko rules engine", () => {
   });
 
   it("moves placed dice and passes the turn when no combo action is earned", () => {
-    const game = newGame({ playerCount: 2, seed: "move" });
+    const game = newGame({ skipOpeningRoll: true, playerCount: 2, seed: "move" });
     const die = game.dice.find((candidate) => candidate.ownerId === "p1")!;
     die.row = 0;
     die.col = 0;
@@ -375,7 +416,7 @@ describe("Disuko rules engine", () => {
   });
 
   it("does not move the same die more than once in a turn", () => {
-    const game = newGame({ playerCount: 2, seed: "move-once-per-turn" });
+    const game = newGame({ skipOpeningRoll: true, playerCount: 2, seed: "move-once-per-turn" });
     const die = game.dice.find((candidate) => candidate.ownerId === "p1")!;
     die.row = 0;
     die.col = 0;
@@ -394,7 +435,7 @@ describe("Disuko rules engine", () => {
   });
 
   it("allows the same die to move again on a later turn", () => {
-    const game = newGame({ playerCount: 2, seed: "move-later-turn" });
+    const game = newGame({ skipOpeningRoll: true, playerCount: 2, seed: "move-later-turn" });
     const die = game.dice.find((candidate) => candidate.ownerId === "p1")!;
     die.row = 0;
     die.col = 0;
@@ -411,7 +452,7 @@ describe("Disuko rules engine", () => {
   });
 
   it("selects and moves another player's board die", () => {
-    const game = newGame({ playerCount: 2, seed: "move-opponent" });
+    const game = newGame({ skipOpeningRoll: true, playerCount: 2, seed: "move-opponent" });
     const redDie = game.dice.find((candidate) => candidate.ownerId === "p2")!;
     redDie.row = 0;
     redDie.col = 0;
@@ -427,7 +468,7 @@ describe("Disuko rules engine", () => {
   });
 
   it("tracks board changes visible since the active player's previous turn", () => {
-    const game = newGame({ playerCount: 2, seed: "recent-changes" });
+    const game = newGame({ skipOpeningRoll: true, playerCount: 2, seed: "recent-changes" });
     const blueDie = game.dice.find((candidate) => candidate.ownerId === "p1")!;
 
     const afterBluePlace = placeDie(game, blueDie.id, 0, 0);
@@ -456,7 +497,7 @@ describe("Disuko rules engine", () => {
   });
 
   it("awards the current player a combo action when moving another player's die completes a row", () => {
-    const game = newGame({ playerCount: 2, seed: "opponent-row-combo" });
+    const game = newGame({ skipOpeningRoll: true, playerCount: 2, seed: "opponent-row-combo" });
     const blueDice = game.dice.filter((die) => die.ownerId === "p1");
     const redDie = game.dice.find((die) => die.ownerId === "p2")!;
 
@@ -478,7 +519,7 @@ describe("Disuko rules engine", () => {
   });
 
   it("awards the current player a combo action when moving another player's die completes a column", () => {
-    const game = newGame({ playerCount: 2, seed: "opponent-column-combo" });
+    const game = newGame({ skipOpeningRoll: true, playerCount: 2, seed: "opponent-column-combo" });
     const blueDice = game.dice.filter((die) => die.ownerId === "p1");
     const redDie = game.dice.find((die) => die.ownerId === "p2")!;
 
@@ -500,7 +541,7 @@ describe("Disuko rules engine", () => {
   });
 
   it("stacks combo actions when moving another player's die completes a row and column", () => {
-    const game = newGame({ playerCount: 2, seed: "stacked-move-combo" });
+    const game = newGame({ skipOpeningRoll: true, playerCount: 2, seed: "stacked-move-combo" });
     const blueDice = game.dice.filter((die) => die.ownerId === "p1");
     const redDie = game.dice.find((die) => die.ownerId === "p2")!;
 
@@ -531,7 +572,7 @@ describe("Disuko rules engine", () => {
   });
 
   it("rerolls selected off-board dice only", () => {
-    const game = newGame({ playerCount: 2, seed: "reroll" });
+    const game = newGame({ skipOpeningRoll: true, playerCount: 2, seed: "reroll" });
     const [offBoard, onBoard] = game.dice.filter((die) => die.ownerId === "p1");
     offBoard.value = 1;
     onBoard.value = 6;
@@ -548,7 +589,7 @@ describe("Disuko rules engine", () => {
   });
 
   it("sets exact reroll selections for current-player off-board dice", () => {
-    const game = newGame({ playerCount: 2, seed: "reroll-selection" });
+    const game = newGame({ skipOpeningRoll: true, playerCount: 2, seed: "reroll-selection" });
     const blueDice = game.dice.filter((die) => die.ownerId === "p1");
     const redDie = game.dice.find((die) => die.ownerId === "p2")!;
     blueDice[2].row = 0;
@@ -563,7 +604,7 @@ describe("Disuko rules engine", () => {
   });
 
   it("rerolls only an explicit partial stack selection", () => {
-    const game = newGame({ playerCount: 2, seed: "partial-reroll" });
+    const game = newGame({ skipOpeningRoll: true, playerCount: 2, seed: "partial-reroll" });
     game.rngState = 12345;
     const blueDice = game.dice.filter((die) => die.ownerId === "p1");
     blueDice.slice(0, 3).forEach((die) => {
@@ -582,7 +623,7 @@ describe("Disuko rules engine", () => {
   });
 
   it("keeps reroll mode when the player has actions remaining after a roll", () => {
-    const game = newGame({ playerCount: 2, seed: "reroll-extra-action" });
+    const game = newGame({ skipOpeningRoll: true, playerCount: 2, seed: "reroll-extra-action" });
     const die = game.dice.find((candidate) => candidate.ownerId === "p1")!;
     game.actionCredits = 2;
 
@@ -593,7 +634,7 @@ describe("Disuko rules engine", () => {
     expect(next.mode).toBe("reroll");
   });
   it("does not reroll all dice after an explicit zero reroll selection", () => {
-    const game = newGame({ playerCount: 2, seed: "zero-reroll" });
+    const game = newGame({ skipOpeningRoll: true, playerCount: 2, seed: "zero-reroll" });
     const blueDice = game.dice.filter((die) => die.ownerId === "p1");
     const originalValues = blueDice.map((die) => die.value);
 
@@ -606,7 +647,7 @@ describe("Disuko rules engine", () => {
   });
 
   it("returns an immediately challenged conflicting die", () => {
-    const game = newGame({ playerCount: 2, seed: "challenge" });
+    const game = newGame({ skipOpeningRoll: true, playerCount: 2, seed: "challenge" });
     const blueDice = game.dice.filter((die) => die.ownerId === "p1");
 
     blueDice[0].value = 3;
@@ -635,7 +676,7 @@ describe("Disuko rules engine", () => {
   });
 
   it("resolves an immediate challenge from either clicked conflicting die", () => {
-    const clickOlderDieGame = newGame({ playerCount: 2, seed: "click-challenge-older" });
+    const clickOlderDieGame = newGame({ skipOpeningRoll: true, playerCount: 2, seed: "click-challenge-older" });
     const olderClickDice = clickOlderDieGame.dice.filter((die) => die.ownerId === "p1");
     olderClickDice[0].value = 3;
     olderClickDice[0].row = 0;
@@ -658,7 +699,7 @@ describe("Disuko rules engine", () => {
 
     expect(olderClickChallenged.dice.find((die) => die.id === olderClickDice[1].id)?.row).toBeNull();
 
-    const clickNewerDieGame = newGame({ playerCount: 2, seed: "click-challenge-newer" });
+    const clickNewerDieGame = newGame({ skipOpeningRoll: true, playerCount: 2, seed: "click-challenge-newer" });
     const newerClickDice = clickNewerDieGame.dice.filter((die) => die.ownerId === "p1");
     newerClickDice[0].value = 3;
     newerClickDice[0].row = 0;
@@ -683,7 +724,7 @@ describe("Disuko rules engine", () => {
   });
 
   it("resolves late challenges by returning one conflicting die", () => {
-    const game = newGame({ playerCount: 2, seed: "late-challenge" });
+    const game = newGame({ skipOpeningRoll: true, playerCount: 2, seed: "late-challenge" });
     const blueDie = game.dice.find((die) => die.ownerId === "p1")!;
     const redDie = game.dice.find((die) => die.ownerId === "p2")!;
     blueDie.value = 5;
@@ -707,7 +748,7 @@ describe("Disuko rules engine", () => {
   });
 
   it("supports end-action passes without changing board state", () => {
-    const game = newGame({ playerCount: 2, seed: "pass" });
+    const game = newGame({ skipOpeningRoll: true, playerCount: 2, seed: "pass" });
     const next = endAction(game);
 
     expect(next.currentPlayerIndex).toBe(1);
@@ -716,7 +757,7 @@ describe("Disuko rules engine", () => {
   });
 
   it("declares the first player to place all dice as the winner", () => {
-    const game = newGame({ playerCount: 4, seed: "win" });
+    const game = newGame({ skipOpeningRoll: true, playerCount: 4, seed: "win" });
     const blueDice = game.dice.filter((die) => die.ownerId === "p1");
     blueDice.slice(0, 8).forEach((die, index) => {
       die.row = Math.floor(index / 6);
@@ -735,7 +776,7 @@ describe("Disuko rules engine", () => {
   });
 
   it("serializes and restores save state", () => {
-    const game = newGame({ playerCount: 3, seed: "save" });
+    const game = newGame({ skipOpeningRoll: true, playerCount: 3, seed: "save" });
     const restored = restoreGame(serializeGame(game));
 
     expect(restored.seed).toBe("save");
@@ -744,7 +785,7 @@ describe("Disuko rules engine", () => {
   });
 
   it("persists bot controllers and restores legacy saves as human players", () => {
-    const botGame = newGame({
+    const botGame = newGame({ skipOpeningRoll: true,
       playerCount: 2,
       seed: "bot-controller-save",
       playerControllers: [{ kind: "human" }, { kind: "bot", difficulty: "very-easy" }]

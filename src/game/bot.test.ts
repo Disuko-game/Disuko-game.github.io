@@ -31,7 +31,7 @@ const validBoard: DiceValue[][] = [
 
 describe("Disuko bots", () => {
   it("generates valid engine actions without mutating the game", () => {
-    const game = newGame({ playerCount: 2, seed: "bot-legality" });
+    const game = newGame({ skipOpeningRoll: true, playerCount: 2, seed: "bot-legality" });
     const blueDice = game.dice.filter((die) => die.ownerId === "p1").slice(0, 3);
     const redDice = game.dice.filter((die) => die.ownerId === "p2").slice(0, 2);
 
@@ -105,7 +105,7 @@ describe("Disuko bots", () => {
   });
 
   it("prioritizes a challenge and delegates its resolution to the engine", () => {
-    const game = newGame({ playerCount: 2, seed: "bot-challenge" });
+    const game = newGame({ skipOpeningRoll: true, playerCount: 2, seed: "bot-challenge" });
     const blueDie = game.dice.find((die) => die.ownerId === "p1")!;
     const redDie = game.dice.find((die) => die.ownerId === "p2")!;
 
@@ -139,7 +139,7 @@ describe("Disuko bots", () => {
   });
 
   it("passes when a playing state has no placement, movement, or reroll", () => {
-    const game = newGame({ playerCount: 2, seed: "bot-pass" });
+    const game = newGame({ skipOpeningRoll: true, playerCount: 2, seed: "bot-pass" });
 
     game.dice.forEach((die, index) => {
       const row = Math.floor(index / 6);
@@ -237,7 +237,7 @@ describe("Disuko bots", () => {
 });
 
 function compactOpenGame(seed: string): GameState {
-  const game = newGame({ playerCount: 2, seed });
+  const game = newGame({ skipOpeningRoll: true, playerCount: 2, seed });
   const blueDice = game.dice.filter((die) => die.ownerId === "p1").slice(0, 3);
   const redDice = game.dice.filter((die) => die.ownerId === "p2").slice(0, 3);
 
@@ -259,7 +259,7 @@ function compactOpenGame(seed: string): GameState {
 }
 
 function comboGame(seed: string): GameState {
-  const game = newGame({ playerCount: 2, seed });
+  const game = newGame({ skipOpeningRoll: true, playerCount: 2, seed });
   const blueDice = game.dice.filter((die) => die.ownerId === "p1").slice(0, 2);
   const redDice = game.dice.filter((die) => die.ownerId === "p2").slice(0, 5);
 
@@ -276,7 +276,7 @@ function comboGame(seed: string): GameState {
 }
 
 function actionBankGame(seed: string): GameState {
-  const game = newGame({ playerCount: 3, seed });
+  const game = newGame({ skipOpeningRoll: true, playerCount: 3, seed });
   const playerOneDice = game.dice.filter((die) => die.ownerId === "p1");
   const trayDice = playerOneDice.slice(0, 2);
   const boardDice = game.dice.filter((die) => !trayDice.includes(die)).slice(0, 17);
@@ -307,7 +307,7 @@ function distantOpponentThreatGame(
   playerCount: 3 | 4,
   threatenedPlayerId: "p3" | "p4"
 ): GameState {
-  const game = newGame({ playerCount, seed });
+  const game = newGame({ skipOpeningRoll: true, playerCount, seed });
   const diceFor = (playerId: string) => game.dice.filter((die) => die.ownerId === playerId);
   const playerOneDice = diceFor("p1").slice(0, 5);
   const playerTwoDice = diceFor("p2").slice(0, 2);

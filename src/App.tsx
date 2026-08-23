@@ -19,6 +19,7 @@ import { createPortal } from "react-dom";
 import { boxIndex, cellsForBox } from "./game/geometry";
 import {
   challengeViolation,
+  completeOpeningRoll,
   conflictCellKeys,
   conflictDieIds,
   currentPlayer,
@@ -294,6 +295,7 @@ interface TrackedTurn {
   seed: string;
   turnNumber: number;
   currentPlayerIndex: number;
+  phase: GameState["phase"];
 }
 
 type DragPointerEvent = {
@@ -2008,7 +2010,7 @@ function OnlineRoomSession({
   useEffect(() => {
     const game = bundle?.room.game_state;
 
-    if (!bundle || !game || saving || bundle.room.status !== "playing") {
+    if (!bundle || !game || game.phase !== "playing" || saving || bundle.room.status !== "playing") {
       return;
     }
 
@@ -2205,8 +2207,10 @@ function OnlineRoomSession({
   const onlinePlayerId = onlineSeat ? playerIdForSeat(onlineSeat.seat_index) : undefined;
 
   const activeOnlinePlayer = currentPlayer(onlineGame);
-  const onlineStatus = activeOnlinePlayer.controller?.kind === "bot"
-    ? `${activeOnlinePlayer.name} is taking a turn`
+  const onlineStatus = onlineGame.phase === "opening"
+    ? "Rolling for first turn"
+    : activeOnlinePlayer.controller?.kind === "bot"
+      ? `${activeOnlinePlayer.name} is taking a turn`
     : activeOnlinePlayer.id === onlinePlayerId
       ? "Your turn"
       : `Waiting for ${activeOnlinePlayer.name}`;
@@ -2219,6 +2223,7 @@ function OnlineRoomSession({
       onNewGame={onExit}
       newGameLabel="Games"
       onlinePlayerId={onlinePlayerId}
+      canResolveOpeningRoll={bundle.room.turn_profile_id === profile.id}
       showOnlinePlayerNames
       suppressTurnPrompt
     >
@@ -2481,6 +2486,7 @@ function GameScreen({
   onNewGame,
   newGameLabel = "New",
   onlinePlayerId,
+  canResolveOpeningRoll = true,
   showOnlinePlayerNames = false,
   suppressTurnPrompt = false,
   children
@@ -2492,6 +2498,7 @@ function GameScreen({
   onNewGame: () => void;
   newGameLabel?: string;
   onlinePlayerId?: string;
+  canResolveOpeningRoll?: boolean;
   showOnlinePlayerNames?: boolean;
   suppressTurnPrompt?: boolean;
   children: ReactNode;
@@ -2533,7 +2540,8 @@ function GameScreen({
   const trackedTurn = useRef<TrackedTurn>({
     seed: game.seed,
     turnNumber: game.turnNumber,
-    currentPlayerIndex: game.currentPlayerIndex
+    currentPlayerIndex: game.currentPlayerIndex,
+    phase: game.phase
   });
   const dragCandidate = useRef<{
     dieId: string;
@@ -2569,6 +2577,7 @@ function GameScreen({
     ? `${activePlayer.name}'s turn`
     : null;
   const canUseTurnControls =
+    game.phase === "playing" &&
     !rerollAnimation &&
     !isBotTurn &&
     (!showOnlinePlayerNames || Boolean(onlinePlayerId && activePlayer.id === onlinePlayerId));
@@ -2576,13 +2585,17 @@ function GameScreen({
     ? game.players.find((player) => player.id === rerollAnimation.dice[0]?.ownerId)
     : undefined;
   const winner = game.winnerId ? game.players.find((player) => player.id === game.winnerId) : undefined;
-  const gameStatusLabel = game.phase === "won"
-    ? `${winner?.name ?? "A player"} won`
-    : animatedBotRerollPlayer
-      ? `${animatedBotRerollPlayer.name} is re-rolling.`
-      : isBotTurn
-        ? `${activePlayer.name} is thinking.`
-      : showOnlinePlayerNames ? onlineWaitingTurnLabel ?? "Your turn" : `${activePlayer.name}'s turn`;
+  const gameStatusLabel = game.phase === "opening"
+    ? "Rolling for first turn"
+    : game.phase === "won"
+      ? `${winner?.name ?? "A player"} won`
+      : animatedBotRerollPlayer
+        ? `${animatedBotRerollPlayer.name} is re-rolling.`
+        : isBotTurn
+          ? `${activePlayer.name} is thinking.`
+          : showOnlinePlayerNames
+            ? onlineWaitingTurnLabel ?? "Your turn"
+            : `${activePlayer.name}'s turn`;
   const trayStatusLabel = game.mode === "reroll" ? "Select the dice to re-roll" : actionCountLabel;
   const activePlayerNumber = game.currentPlayerIndex + 1;
   const activePlayerColor = playerColorCssVars[activePlayer.color];
@@ -2638,7 +2651,7 @@ function GameScreen({
   }, [onCommit]);
 
   useEffect(() => {
-    if (game.mode === "reroll" || isBotTurn || onlinePlayerId !== undefined) {
+    if (game.phase === "opening" || game.mode === "reroll" || isBotTurn || onlinePlayerId !== undefined) {
       void loadRerollDice3D();
       void preloadRerollPhysics().catch(() => undefined);
     }
@@ -3107,11 +3120,13 @@ function GameScreen({
       !isDifferentGame &&
       game.phase === "playing" &&
       (previous.turnNumber !== game.turnNumber || previous.currentPlayerIndex !== game.currentPlayerIndex);
+    const didFinishOpeningRoll = previous.phase === "opening" && game.phase === "playing";
 
     trackedTurn.current = {
       seed: game.seed,
       turnNumber: game.turnNumber,
-      currentPlayerIndex: game.currentPlayerIndex
+      currentPlayerIndex: game.currentPlayerIndex,
+      phase: game.phase
     };
 
     if (isDifferentGame || game.phase !== "playing") {
@@ -3119,7 +3134,7 @@ function GameScreen({
       return;
     }
 
-    if (didAdvanceTurn) {
+    if (didAdvanceTurn || didFinishOpeningRoll) {
       clearDragState();
       setOpenRerollValue(null);
       setHasExplicitRerollSelection(false);
@@ -3895,6 +3910,13 @@ function GameScreen({
         />
       ) : null}
 
+      {game.phase === "opening" && game.openingRoll ? (
+        <OpeningRollTray
+          game={game}
+          canResolve={canResolveOpeningRoll}
+          onComplete={() => onCommitRef.current(completeOpeningRoll(game))}
+        />
+      ) : null}
       {botDragAnimation ? (
         <div
           className="bot-drag-preview"
@@ -4461,6 +4483,159 @@ function Board({
   );
 }
 
+function OpeningRollTray({
+  game,
+  canResolve,
+  onComplete
+}: {
+  game: GameState;
+  canResolve: boolean;
+  onComplete: () => void;
+}): ReactElement {
+  const [roundIndex, setRoundIndex] = useState(0);
+  const [settled, setSettled] = useState(false);
+  const [position, setPosition] = useState<{ left: number; top: number; width: number; height: number } | null>(null);
+  const completedKey = useRef<string | null>(null);
+  const onCompleteRef = useRef(onComplete);
+  onCompleteRef.current = onComplete;
+  const openingRoll = game.openingRoll;
+  const rounds = openingRoll?.rounds ?? [];
+  const safeRoundIndex = Math.min(roundIndex, Math.max(0, rounds.length - 1));
+  const round = rounds[safeRoundIndex];
+  const isFinalRound = safeRoundIndex === rounds.length - 1;
+  const highRoll = round ? Math.max(...round.rolls.map(({ value }) => value)) : 0;
+  const leaders = round?.rolls.filter(({ value }) => value === highRoll) ?? [];
+  const winner = openingRoll
+    ? game.players.find((player) => player.id === openingRoll.winnerPlayerId)
+    : undefined;
+  const playerIndexes = useMemo(() => {
+    return round?.rolls.map(({ playerId }) => game.players.findIndex((player) => player.id === playerId)) ?? [];
+  }, [game.players, round]);
+  const dice = useMemo(() => {
+    return (round?.rolls ?? []).map(({ playerId, value }, index) => {
+      const playerIndex = game.players.findIndex((player) => player.id === playerId);
+      const player = game.players[playerIndex];
+      const initialValue = (((value + index + safeRoundIndex + 1) % 6) + 1) as DiceValue;
+      return {
+        id: `opening:${safeRoundIndex}:${playerId}`,
+        initialValue,
+        finalValue: value,
+        playerColor: player?.color ?? "blue",
+        playerIndex
+      };
+    });
+  }, [game.players, round, safeRoundIndex]);
+
+  useEffect(() => {
+    setRoundIndex(0);
+    setSettled(false);
+    completedKey.current = null;
+  }, [game.seed]);
+
+  useLayoutEffect(() => {
+    const updatePosition = () => {
+      const board = document.querySelector<HTMLElement>(".board-wrap");
+
+      if (!board) {
+        setPosition(null);
+        return;
+      }
+
+      const rect = board.getBoundingClientRect();
+      setPosition({ left: rect.left, top: rect.top, width: rect.width, height: rect.height });
+    };
+
+    updatePosition();
+    window.addEventListener("resize", updatePosition);
+    window.addEventListener("scroll", updatePosition, true);
+    return () => {
+      window.removeEventListener("resize", updatePosition);
+      window.removeEventListener("scroll", updatePosition, true);
+    };
+  }, [game.tabletopMode]);
+
+  useEffect(() => {
+    if (!settled || !round) {
+      return;
+    }
+
+    const timer = window.setTimeout(() => {
+      if (!isFinalRound) {
+        setRoundIndex((current) => current + 1);
+        setSettled(false);
+        return;
+      }
+
+      const key = `${game.seed}:${openingRoll?.winnerPlayerId ?? "unknown"}`;
+      if (canResolve && completedKey.current !== key) {
+        completedKey.current = key;
+        onCompleteRef.current();
+      }
+    }, 1050);
+
+    return () => window.clearTimeout(timer);
+  }, [canResolve, game.seed, isFinalRound, openingRoll?.winnerPlayerId, round, settled]);
+
+  if (!openingRoll || !round) {
+    return <></>;
+  }
+
+  const headline = settled
+    ? isFinalRound
+      ? `${winner?.name ?? "The winner"} rolls highest and goes first!`
+      : `${leaders.map(({ playerId }) => game.players.find((player) => player.id === playerId)?.name ?? playerId).join(" and ")} tied — roll again!`
+    : safeRoundIndex === 0
+      ? "Roll for first turn"
+      : "Tie-breaker roll";
+
+  return createPortal(
+    <section
+      className={`opening-roll-tray ${settled ? "is-settled" : "is-rolling"}`}
+      role="status"
+      aria-live="polite"
+      style={{
+        left: position?.left ?? 0,
+        top: position?.top ?? 0,
+        width: position?.width,
+        height: position?.height,
+        visibility: position ? "visible" : "hidden"
+      }}
+    >
+      <strong>{headline}</strong>
+      <div className="opening-roll-stage">
+        <Suspense fallback={<span className="opening-roll-loading">Preparing dice…</span>}>
+          <RerollDice3D
+            key={`${game.seed}:${safeRoundIndex}`}
+            dice={dice}
+            playerColor="blue"
+            variant={rerollVariantFromKey(`${game.seed}:opening:${safeRoundIndex}`)}
+            openingPlayerIndexes={playerIndexes}
+            onSettled={() => setSettled(true)}
+          />
+        </Suspense>
+      </div>
+      <div className="opening-roll-results" aria-label={`Opening roll round ${safeRoundIndex + 1}`}>
+        {round.rolls.map(({ playerId, value }) => {
+          const player = game.players.find((candidate) => candidate.id === playerId);
+          return (
+            <span
+              className={settled && value === highRoll ? "is-high-roll" : ""}
+              key={playerId}
+              style={{ "--opening-player-color": playerColorCssVars[player?.color ?? "blue"] } as CSSProperties}
+            >
+              <b>{player?.name ?? playerId}</b>
+              <em>{settled ? value : "–"}</em>
+            </span>
+          );
+        })}
+      </div>
+      {settled && isFinalRound && !canResolve ? (
+        <small>Waiting for the first player’s game to sync…</small>
+      ) : null}
+    </section>,
+    document.body
+  );
+}
 function FloatingRerollTray({
   playerId,
   playerName,

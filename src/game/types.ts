@@ -13,7 +13,7 @@ export type PlayerController =
   | { kind: "human" }
   | { kind: "bot"; difficulty: BotDifficulty };
 export type ActionMode = "place" | "move" | "reroll" | "challenge";
-export type GamePhase = "playing" | "won";
+export type GamePhase = "opening" | "playing" | "won";
 export type CompletionKind = "row" | "column" | "box" | "value";
 export type ConflictKind = "row" | "column" | "box";
 export type LastActionType = "place" | "move" | "reroll" | "challenge" | "pass";
@@ -70,6 +70,18 @@ export interface BoardChange {
   turnNumber: number;
 }
 
+export interface OpeningRollRound {
+  rolls: Array<{
+    playerId: string;
+    value: DiceValue;
+  }>;
+}
+
+export interface OpeningRoll {
+  rounds: OpeningRollRound[];
+  winnerPlayerId: string;
+}
+
 export interface GameState {
   version: 1;
   seed: string;
@@ -84,6 +96,7 @@ export interface GameState {
   selectedDieIds: string[];
   completedKeys: string[];
   phase: GamePhase;
+  openingRoll?: OpeningRoll;
   winnerId?: string;
   message: string;
   lastAction?: LastAction;
@@ -97,4 +110,5 @@ export interface NewGameOptions {
   tabletopMode?: boolean;
   playerNames?: string[];
   playerControllers?: PlayerController[];
+  skipOpeningRoll?: boolean;
 }

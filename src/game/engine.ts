@@ -16,6 +16,7 @@ import {
   type GameState,
   type LastActionType,
   type NewGameOptions,
+  type OpeningRoll,
   type Player
 } from "./types";
 
@@ -57,6 +58,13 @@ export function newGame(options: NewGameOptions): GameState {
     }
   });
 
+  const skipOpeningRoll = options.skipOpeningRoll ?? false;
+  const opening = skipOpeningRoll ? undefined : rollForFirstPlayer(players, rngState);
+  if (opening) rngState = opening.rngState;
+  const winnerIndex = opening
+    ? players.findIndex((player) => player.id === opening.roll.winnerPlayerId)
+    : 0;
+
   return {
     version: 1,
     seed,
@@ -64,17 +72,60 @@ export function newGame(options: NewGameOptions): GameState {
     players,
     dice,
     tabletopMode: options.tabletopMode ?? false,
-    currentPlayerIndex: 0,
+    currentPlayerIndex: Math.max(0, winnerIndex),
     turnNumber: 1,
     actionCredits: 1,
     mode: "place",
     selectedDieIds: [],
     completedKeys: [],
-    phase: "playing",
-    message: `${players[0].name}, place a die, move a die, or reroll your tray.`,
+    phase: skipOpeningRoll ? "playing" : "opening",
+    openingRoll: opening?.roll,
+    message: skipOpeningRoll
+      ? `${players[Math.max(0, winnerIndex)].name}, place a die, move a die, or reroll your tray.`
+      : `${players[Math.max(0, winnerIndex)].name} won the opening roll and goes first.`,
     lastAction: undefined,
     boardChanges: [],
     challengeRolls: undefined
+  };
+}
+
+export function completeOpeningRoll(state: GameState): GameState {
+  if (state.phase !== "opening") {
+    return state;
+  }
+
+  const next = cloneState(state);
+  const player = currentPlayer(next);
+  next.phase = "playing";
+  next.actionCredits = 1;
+  next.mode = "place";
+  next.selectedDieIds = [];
+  next.message = `${player.name}, place a die, move a die, or reroll your tray.`;
+  return next;
+}
+
+function rollForFirstPlayer(players: Player[], initialRngState: number): { roll: OpeningRoll; rngState: number } {
+  let rngState = initialRngState;
+  let contenders = players.map((player) => player.id);
+  const rounds: OpeningRoll["rounds"] = [];
+
+  while (contenders.length > 1) {
+    const rolls = contenders.map((playerId) => {
+      const result = rollDie(rngState);
+      rngState = result.state;
+      return { playerId, value: result.value };
+    });
+    const highRoll = Math.max(...rolls.map(({ value }) => value));
+    contenders = rolls.filter(({ value }) => value === highRoll).map(({ playerId }) => playerId);
+    rounds.push({ rolls });
+  }
+
+  return {
+    roll: {
+      rounds,
+      winnerPlayerId: contenders[0]
+    },
+    rngState
   };
 }
 
@@ -458,6 +509,10 @@ export function restoreGame(serialized: string): GameState {
     throw new Error("Saved Disuko game is not compatible with this version.");
   }
 
+  const restoredPhase = parsed.phase === "opening" && !parsed.openingRoll
+    ? "playing"
+    : parsed.phase ?? "playing";
+
   return {
     ...parsed,
     version: 1,
@@ -477,7 +532,8 @@ export function restoreGame(serialized: string): GameState {
     mode: parsed.mode ?? "place",
     selectedDieIds: parsed.selectedDieIds ?? [],
     completedKeys: parsed.completedKeys ?? [],
-    phase: parsed.phase ?? "playing",
+    phase: restoredPhase,
+    openingRoll: parsed.openingRoll,
     message: parsed.message ?? "Game restored.",
     boardChanges: parsed.boardChanges ?? []
   } as GameState;
