@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   boardDiceForPlayer,
   calculateCompletionKeys,
+  canRerollOpponentDie,
   challengeViolation,
   completeOpeningRoll,
   detectConflicts,
@@ -620,6 +621,104 @@ describe("Disuko rules engine", () => {
     expect(unselected?.value).toBe(1);
     expect(next.lastAction?.dieIds).toEqual([blueDice[0].id, blueDice[1].id]);
     expect(next.message).toContain("rerolled 2 dice");
+  });
+
+  it("rerolls one opponent die and records it for the current turn", () => {
+    const game = newGame({
+      skipOpeningRoll: true,
+      playerCount: 2,
+      seed: "opponent-reroll",
+      opponentRerollEnabled: true
+    });
+    const opponentDie = game.dice.find((die) => die.ownerId === "p2")!;
+    opponentDie.value = 1;
+    game.actionCredits = 2;
+
+    const selected = setSelectedRerollDice(game, [opponentDie.id]);
+    expect(selected.selectedDieIds).toEqual([opponentDie.id]);
+
+    const next = rerollDice(selected, selected.selectedDieIds, { defaultToAll: false });
+    expect(next.rngState).not.toBe(game.rngState);
+    expect(next.opponentRerolls).toContainEqual({
+      playerId: "p1",
+      dieId: opponentDie.id,
+      turnNumber: 1
+    });
+    expect(next.actionCredits).toBe(1);
+  });
+
+  it("only allows off-board opponent dice when no own die is selected", () => {
+    const game = newGame({
+      skipOpeningRoll: true,
+      playerCount: 2,
+      seed: "opponent-reroll-selection-rules",
+      opponentRerollEnabled: true
+    });
+    const ownDie = game.dice.find((die) => die.ownerId === "p1")!;
+    const opponentDice = game.dice.filter((die) => die.ownerId === "p2");
+    const [opponentTrayDie, opponentBoardDie] = opponentDice;
+    opponentBoardDie.row = 0;
+    opponentBoardDie.col = 0;
+
+    expect(canRerollOpponentDie(game, opponentTrayDie.id)).toBe(true);
+    expect(canRerollOpponentDie(game, opponentBoardDie.id)).toBe(false);
+
+    const ownSelected = setSelectedRerollDice(game, [ownDie.id]);
+    expect(canRerollOpponentDie(ownSelected, opponentTrayDie.id)).toBe(false);
+
+    const mixedSelection = setSelectedRerollDice(game, [ownDie.id, opponentTrayDie.id]);
+    expect(mixedSelection.selectedDieIds).toEqual([ownDie.id]);
+  });
+
+  it("does not reroll an opponent die from the board", () => {
+    const game = newGame({
+      skipOpeningRoll: true,
+      playerCount: 2,
+      seed: "opponent-board-reroll",
+      opponentRerollEnabled: true
+    });
+    const opponentDie = game.dice.find((die) => die.ownerId === "p2")!;
+    opponentDie.row = 0;
+    opponentDie.col = 0;
+    const originalValue = opponentDie.value;
+
+    const next = rerollDice(game, [opponentDie.id], { defaultToAll: false });
+
+    expect(next.dice.find((die) => die.id === opponentDie.id)?.value).toBe(originalValue);
+    expect(next.actionCredits).toBe(game.actionCredits);
+    expect(next.message).toBe("Choose one eligible opponent die to reroll.");
+  });
+
+  it("does not allow the same opponent die to be rerolled twice in one turn", () => {
+    const game = newGame({
+      skipOpeningRoll: true,
+      playerCount: 2,
+      seed: "opponent-reroll-once",
+      opponentRerollEnabled: true
+    });
+    const opponentDice = game.dice.filter((die) => die.ownerId === "p2");
+    game.actionCredits = 3;
+
+    const afterFirst = rerollDice(game, [opponentDice[0].id], { defaultToAll: false });
+    const firstValue = afterFirst.dice.find((die) => die.id === opponentDice[0].id)?.value;
+    const rejected = rerollDice(afterFirst, [opponentDice[0].id], { defaultToAll: false });
+
+    expect(rejected.dice.find((die) => die.id === opponentDice[0].id)?.value).toBe(firstValue);
+    expect(rejected.actionCredits).toBe(2);
+    expect(rejected.message).toBe("That opponent die has already been rerolled this turn.");
+
+    const differentDie = rerollDice(rejected, [opponentDice[1].id], { defaultToAll: false });
+    expect(differentDie.opponentRerolls).toHaveLength(2);
+    expect(differentDie.actionCredits).toBe(1);
+  });
+
+  it("keeps opponent rerolls disabled unless the game option is enabled", () => {
+    const game = newGame({ skipOpeningRoll: true, playerCount: 2, seed: "opponent-reroll-disabled" });
+    const opponentDie = game.dice.find((die) => die.ownerId === "p2")!;
+    const selected = setSelectedRerollDice(game, [opponentDie.id]);
+
+    expect(selected.selectedDieIds).toEqual([]);
+    expect(rerollDice(game, [opponentDie.id], { defaultToAll: false }).actionCredits).toBe(1);
   });
 
   it("keeps reroll mode when the player has actions remaining after a roll", () => {

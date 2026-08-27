@@ -1,0 +1,64 @@
+{
+  "version": 1,
+  "id": "hard-opponent-reroll-opening-tuned-head-to-head",
+  "name": "Opening-tactical Hard control versus Hard with opponent-reroll incentive",
+  "games": 1200,
+  "playerCounts": [
+    2
+  ],
+  "opponentRerollEnabled": true,
+  "seed": "hard-opponent-reroll-opening-v3",
+  "starterMode": "natural-and-forced",
+  "seatRotation": true,
+  "concurrency": 8,
+  "maxTurns": 1000,
+  "maxActionsPerTurn": 64,
+  "maxTotalActions": 400,
+  "maxRepeatedStates": 3,
+  "maxTraceActions": 250,
+  "traceEvery": 10,
+  "populations": [
+    {
+      "id": "hard-control",
+      "label": "Hard — no opponent-reroll incentive",
+      "share": 0.5,
+      "source": {
+        "kind": "random",
+        "candidateCount": 1,
+        "template": {
+          "idPrefix": "hard-control",
+          "labelPrefix": "Hard control",
+          "basePreset": "hard",
+          "policy": "search",
+          "knobs": {
+            "weights.opponentReroll": {
+              "mode": "fixed",
+              "value": 0
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "hard-incentive",
+      "label": "Hard — +1,000 opponent-reroll incentive",
+      "share": 0.5,
+      "source": {
+        "kind": "random",
+        "candidateCount": 1,
+        "template": {
+          "idPrefix": "hard-incentive",
+          "labelPrefix": "Hard opponent-reroll incentive",
+          "basePreset": "hard",
+          "policy": "search",
+          "knobs": {
+            "weights.opponentReroll": {
+              "mode": "fixed",
+              "value": 1000
+            }
+          }
+        }
+      }
+    }
+  ]
+}

@@ -455,7 +455,7 @@ export async function respondToFriendRequest(requestId: string, status: "accepte
 
 export async function createRoom(
   profileId: string,
-  options: { playerCount: 2 | 3 | 4; visibility: RoomVisibility; botSeats?: RoomBotSeatInput[] }
+  options: { playerCount: 2 | 3 | 4; visibility: RoomVisibility; botSeats?: RoomBotSeatInput[]; opponentRerollEnabled?: boolean }
 ): Promise<RoomBundle> {
   const supabase = getSupabaseClient();
   const botSeats = normalizeRoomBotSeats(options.botSeats ?? [], options.playerCount);
@@ -468,7 +468,8 @@ export async function createRoom(
         host_profile_id: profileId,
         visibility: "private",
         player_count: options.playerCount,
-        tabletop_mode: false
+        tabletop_mode: false,
+        opponent_reroll_enabled: options.opponentRerollEnabled ?? false
       })
       .select("*")
       .single();
@@ -868,6 +869,7 @@ export async function startRoomGame(bundle: RoomBundle): Promise<RoomBundle> {
     playerCount,
     seed: bundle.room.room_code,
     tabletopMode: false,
+    opponentRerollEnabled: bundle.room.opponent_reroll_enabled,
     playerNames: playerNamesForRoom(bundle.players, playerCount, bundle.bots),
     playerControllers: playerControllersForRoom(bundle.bots, playerCount)
   });

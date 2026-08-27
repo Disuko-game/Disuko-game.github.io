@@ -1,0 +1,314 @@
+{
+  "analysis_version": 1,
+  "design": {
+    "matched_games_per_condition": 1200,
+    "total_games": 2400,
+    "difficulties": [
+      "very-easy",
+      "easy",
+      "medium",
+      "hard"
+    ],
+    "player_counts": [
+      2,
+      3,
+      4
+    ],
+    "same_schedule_mismatches": 0,
+    "bootstrap_samples": 5000
+  },
+  "off": {
+    "games": 1200,
+    "completed_games": 1159,
+    "population_win_rates": {
+      "very-easy": {
+        "wins": 10,
+        "games": 898,
+        "rate": 0.011135857461024499,
+        "low": 0.006059860521346551,
+        "high": 0.020376558638037348
+      },
+      "easy": {
+        "wins": 315,
+        "games": 867,
+        "rate": 0.3633217993079585,
+        "low": 0.33197539577233454,
+        "high": 0.3958740335360165
+      },
+      "medium": {
+        "wins": 346,
+        "games": 868,
+        "rate": 0.3986175115207373,
+        "low": 0.36656118143316,
+        "high": 0.4315672532502876
+      },
+      "hard": {
+        "wins": 488,
+        "games": 877,
+        "rate": 0.556442417331813,
+        "low": 0.5233869956204091,
+        "high": 0.5890055342822422
+      }
+    },
+    "strategy_spread": 0.5453065598707885,
+    "upset_rate_botlab": {
+      "wins": 377,
+      "games": 1046,
+      "rate": 0.3604206500956023,
+      "low": 0.33188410595130624,
+      "high": 0.3899786595675856
+    },
+    "natural_starter_lift": 0.04918032786885296,
+    "forced_starter_lift": -0.011709601873536535,
+    "starter_win_rate_by_player_count": {
+      "2": {
+        "wins": 179,
+        "games": 365,
+        "rate": 0.4904109589041096,
+        "low": 0.4394933272258622,
+        "high": 0.5415283290099056
+      },
+      "3": {
+        "wins": 131,
+        "games": 396,
+        "rate": 0.33080808080808083,
+        "low": 0.28628725304340713,
+        "high": 0.3785799160710111
+      },
+      "4": {
+        "wins": 109,
+        "games": 398,
+        "rate": 0.27386934673366836,
+        "low": 0.2323761800675332,
+        "high": 0.31968596770523344
+      }
+    },
+    "average_turns": 27.8675,
+    "average_actions": 42.00083333333333,
+    "rerolls_per_game": 3.680833333333333,
+    "termination_reasons": {
+      "won": 1159,
+      "repeated-state": 41
+    },
+    "trace_usage": {
+      "traced_games": 120,
+      "all_rerolls": 444,
+      "opponent_rerolls": 0,
+      "opponent_rerolls_per_traced_game": 0.0,
+      "opponent_share_of_rerolls": 0.0,
+      "by_difficulty": {
+        "very-easy": {
+          "opponent_rerolls": 0,
+          "all_rerolls": 147
+        },
+        "easy": {
+          "opponent_rerolls": 0,
+          "all_rerolls": 79
+        },
+        "medium": {
+          "opponent_rerolls": 0,
+          "all_rerolls": 80
+        },
+        "hard": {
+          "opponent_rerolls": 0,
+          "all_rerolls": 138
+        }
+      }
+    }
+  },
+  "on": {
+    "games": 1200,
+    "completed_games": 1178,
+    "population_win_rates": {
+      "very-easy": {
+        "wins": 7,
+        "games": 890,
+        "rate": 0.007865168539325843,
+        "low": 0.0038150167020321287,
+        "high": 0.016145412124164385
+      },
+      "easy": {
+        "wins": 327,
+        "games": 882,
+        "rate": 0.3707482993197279,
+        "low": 0.3394969234439016,
+        "high": 0.40312067733588974
+      },
+      "medium": {
+        "wins": 337,
+        "games": 884,
+        "rate": 0.38122171945701355,
+        "low": 0.34978401982813356,
+        "high": 0.4136872644719488
+      },
+      "hard": {
+        "wins": 507,
+        "games": 890,
+        "rate": 0.5696629213483146,
+        "low": 0.5369034444644218,
+        "high": 0.6018236181218244
+      }
+    },
+    "strategy_spread": 0.5617977528089888,
+    "upset_rate_botlab": {
+      "wins": 379,
+      "games": 1056,
+      "rate": 0.35890151515151514,
+      "low": 0.3305297055967205,
+      "high": 0.3882961645182396
+    },
+    "natural_starter_lift": 0.041530944625407684,
+    "forced_starter_lift": -0.0040183696900114585,
+    "starter_win_rate_by_player_count": {
+      "2": {
+        "wins": 183,
+        "games": 385,
+        "rate": 0.4753246753246753,
+        "low": 0.42593121781181253,
+        "high": 0.5252056798389046
+      },
+      "3": {
+        "wins": 144,
+        "games": 396,
+        "rate": 0.36363636363636365,
+        "low": 0.31777731693781475,
+        "high": 0.41211562533350743
+      },
+      "4": {
+        "wins": 106,
+        "games": 397,
+        "rate": 0.26700251889168763,
+        "low": 0.22586966574637318,
+        "high": 0.3126012285960333
+      }
+    },
+    "average_turns": 28.355833333333333,
+    "average_actions": 44.73916666666667,
+    "rerolls_per_game": 3.935,
+    "termination_reasons": {
+      "won": 1178,
+      "repeated-state": 22
+    },
+    "trace_usage": {
+      "traced_games": 120,
+      "all_rerolls": 498,
+      "opponent_rerolls": 240,
+      "opponent_rerolls_per_traced_game": 2.0,
+      "opponent_share_of_rerolls": 0.4819277108433735,
+      "by_difficulty": {
+        "very-easy": {
+          "opponent_rerolls": 90,
+          "all_rerolls": 136
+        },
+        "easy": {
+          "opponent_rerolls": 58,
+          "all_rerolls": 110
+        },
+        "medium": {
+          "opponent_rerolls": 32,
+          "all_rerolls": 114
+        },
+        "hard": {
+          "opponent_rerolls": 60,
+          "all_rerolls": 138
+        }
+      }
+    }
+  },
+  "population_comparison": [
+    {
+      "difficulty": "very-easy",
+      "off_wins": 10,
+      "on_wins": 7,
+      "scheduled_appearances": 900,
+      "off_rate": 0.011111111111111112,
+      "on_rate": 0.0077777777777777776,
+      "off_completed_rate": 0.011135857461024499,
+      "on_completed_rate": 0.007865168539325843,
+      "difference": -0.0033333333333333335,
+      "difference_ci_low": -0.007683863885839737,
+      "difference_ci_high": 0.0
+    },
+    {
+      "difficulty": "easy",
+      "off_wins": 315,
+      "on_wins": 327,
+      "scheduled_appearances": 900,
+      "off_rate": 0.35,
+      "on_rate": 0.36333333333333334,
+      "off_completed_rate": 0.3633217993079585,
+      "on_completed_rate": 0.3707482993197279,
+      "difference": 0.013333333333333334,
+      "difference_ci_low": -0.018787139349294046,
+      "difference_ci_high": 0.04628757632418988
+    },
+    {
+      "difficulty": "medium",
+      "off_wins": 346,
+      "on_wins": 337,
+      "scheduled_appearances": 900,
+      "off_rate": 0.3844444444444444,
+      "on_rate": 0.37444444444444447,
+      "off_completed_rate": 0.3986175115207373,
+      "on_completed_rate": 0.38122171945701355,
+      "difference": -0.01,
+      "difference_ci_low": -0.039132017138127466,
+      "difference_ci_high": 0.01916626796389279
+    },
+    {
+      "difficulty": "hard",
+      "off_wins": 488,
+      "on_wins": 507,
+      "scheduled_appearances": 900,
+      "off_rate": 0.5422222222222223,
+      "on_rate": 0.5633333333333334,
+      "off_completed_rate": 0.556442417331813,
+      "on_completed_rate": 0.5696629213483146,
+      "difference": 0.021111111111111112,
+      "difference_ci_low": -0.012947092122323771,
+      "difference_ci_high": 0.05473204104903079
+    }
+  ],
+  "paired_effects": {
+    "winner_population_changed_rate": 0.28833333333333333,
+    "completion_rate_change": {
+      "difference": 0.015833333333333335,
+      "ci_low": 0.004166666666666667,
+      "ci_high": 0.0275
+    },
+    "hard_minus_very_easy_spread_change": {
+      "difference": 0.024444444444444446,
+      "ci_low": -0.008950057439990325,
+      "ci_high": 0.05802212987941876
+    },
+    "competitive_upset_rate_change": {
+      "difference": -0.0019723865877712033,
+      "ci_low": -0.03353057199211045,
+      "ci_high": 0.028599605522682446
+    },
+    "starter_win_rate_change": {
+      "difference": 0.011666666666666667,
+      "ci_low": -0.0125,
+      "ci_high": 0.035
+    },
+    "average_turns_change": {
+      "difference": 0.48833333333333334,
+      "ci_low": 0.1375,
+      "ci_high": 0.9158749999999994
+    },
+    "average_actions_change": {
+      "difference": 2.7383333333333333,
+      "ci_low": 1.6799791666666666,
+      "ci_high": 4.029354166666664
+    },
+    "rerolls_per_game_change": {
+      "difference": 0.25416666666666665,
+      "ci_low": -0.048354166666666656,
+      "ci_high": 0.6133749999999994
+    }
+  },
+  "sources": {
+    "off_run": ".botlab\\runs\\competitive-reroll-off-1200",
+    "on_run": ".botlab\\runs\\competitive-reroll-on-1200"
+  }
+}

@@ -10,3 +10,8 @@ dist/
 supabase/.temp/
 .codex-remote-attachments/
 .codex-vite*.log
+
+.botlab/
+dist-botlab/
+__pycache__/
+*.pyc

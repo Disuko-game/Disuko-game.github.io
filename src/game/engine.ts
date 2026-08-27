@@ -17,6 +17,7 @@ import {
   type LastActionType,
   type NewGameOptions,
   type OpeningRoll,
+  type OpponentReroll,
   type Player
 } from "./types";
 
@@ -72,6 +73,7 @@ export function newGame(options: NewGameOptions): GameState {
     players,
     dice,
     tabletopMode: options.tabletopMode ?? false,
+    opponentRerollEnabled: options.opponentRerollEnabled ?? false,
     currentPlayerIndex: Math.max(0, winnerIndex),
     turnNumber: 1,
     actionCredits: 1,
@@ -85,6 +87,7 @@ export function newGame(options: NewGameOptions): GameState {
       : `${players[Math.max(0, winnerIndex)].name} won the opening roll and goes first.`,
     lastAction: undefined,
     boardChanges: [],
+    opponentRerolls: [],
     challengeRolls: undefined
   };
 }
@@ -189,6 +192,34 @@ export function wasDieMovedThisTurn(state: GameState, dieId: string): boolean {
   );
 }
 
+export function wasOpponentDieRerolledThisTurn(state: GameState, dieId: string): boolean {
+  const player = currentPlayer(state);
+
+  return (state.opponentRerolls ?? []).some(
+    (reroll) =>
+      reroll.dieId === dieId &&
+      reroll.playerId === player.id &&
+      reroll.turnNumber === state.turnNumber
+  );
+}
+
+export function canRerollOpponentDie(state: GameState, dieId: string): boolean {
+  const die = state.dice.find((candidate) => candidate.id === dieId);
+  const player = currentPlayer(state);
+  const hasOwnRerollSelection = state.selectedDieIds.some((selectedDieId) =>
+    state.dice.some((candidate) => candidate.id === selectedDieId && candidate.ownerId === player.id)
+  );
+
+  return Boolean(
+    state.opponentRerollEnabled &&
+    die &&
+    die.ownerId !== player.id &&
+    !isOnBoard(die) &&
+    !hasOwnRerollSelection &&
+    !wasOpponentDieRerolledThisTurn(state, die.id)
+  );
+}
+
 export function setMode(state: GameState, mode: ActionMode): GameState {
   const next = cloneState(state);
   next.mode = mode;
@@ -224,11 +255,19 @@ export function setSelectedRerollDice(state: GameState, dieIds: string[]): GameS
   const next = cloneState(state);
   const player = currentPlayer(next);
   const requestedIds = new Set(dieIds);
-
-  next.mode = "reroll";
-  next.selectedDieIds = next.dice
+  const ownDice = next.dice
     .filter((die) => requestedIds.has(die.id) && die.ownerId === player.id && !isOnBoard(die))
     .map((die) => die.id);
+
+  next.mode = "reroll";
+  const opponentDie = next.dice.find(
+    (die) => requestedIds.has(die.id) && die.ownerId !== player.id && canRerollOpponentDie(next, die.id)
+  );
+  next.selectedDieIds = ownDice.length > 0
+    ? ownDice
+    : opponentDie
+    ? [opponentDie.id]
+    : [];
 
   return next;
 }
@@ -307,16 +346,35 @@ export function rerollDice(
   const previousCompletions = calculateCompletionKeys(next);
   const defaultToAll = options.defaultToAll ?? true;
   const requestedIds = dieIds.length > 0 || !defaultToAll ? dieIds : offBoardDice(next, player.id).map((die) => die.id);
-  const diceToRoll = next.dice.filter(
-    (die) => requestedIds.includes(die.id) && die.ownerId === player.id && !isOnBoard(die)
+  const requestedOpponentDie = next.dice.find(
+    (die) => requestedIds.includes(die.id) && die.ownerId !== player.id
   );
+  const diceToRoll = requestedOpponentDie
+    ? canRerollOpponentDie(next, requestedOpponentDie.id) && requestedIds.length === 1
+      ? [requestedOpponentDie]
+      : []
+    : next.dice.filter(
+      (die) => requestedIds.includes(die.id) && die.ownerId === player.id && !isOnBoard(die)
+    );
 
   if (!canTakeAction(next)) {
     return withMessage(next, "No action is available. End the action to continue.");
   }
 
   if (diceToRoll.length === 0) {
+    if (requestedOpponentDie) {
+      return withMessage(
+        next,
+        wasOpponentDieRerolledThisTurn(next, requestedOpponentDie.id)
+          ? "That opponent die has already been rerolled this turn."
+          : "Choose one eligible opponent die to reroll."
+      );
+    }
     return withMessage(next, defaultToAll ? "There are no off-board dice selected to reroll." : "Choose dice to reroll.");
+  }
+
+  if (requestedOpponentDie) {
+    recordOpponentReroll(next, requestedOpponentDie.id, player.id);
   }
 
   diceToRoll.forEach((die) => {
@@ -329,7 +387,9 @@ export function rerollDice(
     next,
     "reroll",
     undefined,
-    `${player.name} rerolled ${diceToRoll.length} dice.`,
+    requestedOpponentDie
+      ? `${player.name} rerolled an opponent's die.`
+      : `${player.name} rerolled ${diceToRoll.length} dice.`,
     previousCompletions,
     diceToRoll.map((die) => die.id)
   );
@@ -528,6 +588,7 @@ export function restoreGame(serialized: string): GameState {
     tabletopMode: parsed.tabletopMode ?? false,
     currentPlayerIndex: parsed.currentPlayerIndex ?? 0,
     turnNumber: parsed.turnNumber ?? 1,
+    opponentRerollEnabled: parsed.opponentRerollEnabled ?? false,
     actionCredits: parsed.actionCredits ?? 1,
     mode: parsed.mode ?? "place",
     selectedDieIds: parsed.selectedDieIds ?? [],
@@ -535,7 +596,8 @@ export function restoreGame(serialized: string): GameState {
     phase: restoredPhase,
     openingRoll: parsed.openingRoll,
     message: parsed.message ?? "Game restored.",
-    boardChanges: parsed.boardChanges ?? []
+    boardChanges: parsed.boardChanges ?? [],
+    opponentRerolls: parsed.opponentRerolls ?? []
   } as GameState;
 }
 
@@ -560,6 +622,7 @@ function cloneState(state: GameState): GameState {
     completedKeys: [...state.completedKeys],
     lastAction: state.lastAction ? { ...state.lastAction, completedKeys: [...state.lastAction.completedKeys], conflictDieIds: [...state.lastAction.conflictDieIds] } : undefined,
     boardChanges: (state.boardChanges ?? []).map((change) => ({ ...change })),
+    opponentRerolls: (state.opponentRerolls ?? []).map((reroll) => ({ ...reroll })),
     challengeRolls: state.challengeRolls?.map((roll) => ({ ...roll }))
   };
 }
@@ -572,6 +635,11 @@ function recordBoardChange(state: GameState, type: BoardChangeType, dieId: strin
     dieId,
     turnNumber: state.turnNumber
   });
+}
+
+function recordOpponentReroll(state: GameState, dieId: string, playerId: string): void {
+  state.opponentRerolls ??= [];
+  state.opponentRerolls.push({ playerId, dieId, turnNumber: state.turnNumber } satisfies OpponentReroll);
 }
 
 function canTakeAction(state: GameState): boolean {

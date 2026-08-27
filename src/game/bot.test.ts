@@ -2,11 +2,14 @@ import { describe, expect, it } from "vitest";
 import {
   applyBotAction,
   chooseBotAction,
+  expectedOpponentRerollValueControlGain,
+  isOpeningValueControlState,
   legalBotActions,
   runBotTurn,
   type BotAction
 } from "./bot";
 import {
+  canRerollOpponentDie,
   currentPlayer,
   detectConflicts,
   getDieAt,
@@ -70,6 +73,78 @@ describe("Disuko bots", () => {
     expect(afterPlacement.lastAction?.type).toBe("place");
     expect(afterReroll.lastAction?.type).toBe("reroll");
     expect(JSON.stringify(game)).toBe(before);
+  });
+
+  it("offers each eligible opponent die as a single reroll action", () => {
+    const game = newGame({
+      skipOpeningRoll: true,
+      playerCount: 2,
+      seed: "bot-opponent-reroll",
+      opponentRerollEnabled: true
+    });
+    const opponentDice = game.dice.filter((die) => die.ownerId === "p2").slice(0, 2);
+    game.dice = [
+      game.dice.find((die) => die.ownerId === "p1")!,
+      ...opponentDice
+    ];
+    game.actionCredits = 2;
+
+    const actions = legalBotActions(game);
+    opponentDice.forEach((die) => {
+      expect(actions).toContainEqual({ type: "reroll", dieIds: [die.id] });
+    });
+
+    const afterReroll = applyBotAction(game, { type: "reroll", dieIds: [opponentDice[0].id] });
+    expect(legalBotActions(afterReroll)).not.toContainEqual({
+      type: "reroll",
+      dieIds: [opponentDice[0].id]
+    });
+    expect(legalBotActions(afterReroll)).toContainEqual({
+      type: "reroll",
+      dieIds: [opponentDice[1].id]
+    });
+  });
+
+  it("recognizes control starting with one matching die", () => {
+    const game = newGame({
+      skipOpeningRoll: true,
+      playerCount: 2,
+      seed: "one-die-value-control",
+      opponentRerollEnabled: true
+    });
+    const ownFive = game.dice.find((die) => die.ownerId === "p1")!;
+    const opponentFive = game.dice.find((die) => die.ownerId === "p2")!;
+    ownFive.value = 5;
+    opponentFive.value = 5;
+    game.dice = [ownFive, opponentFive];
+
+    expect(expectedOpponentRerollValueControlGain(
+      game,
+      { type: "reroll", dieIds: [opponentFive.id] },
+      "p1"
+    )).toBeGreaterThan(0);
+  });
+
+  it("has hard reroll an opponent's final matching value to create a monopoly", () => {
+    const game = newGame({
+      skipOpeningRoll: true,
+      playerCount: 2,
+      seed: "hard-value-control",
+      opponentRerollEnabled: true
+    });
+    const ownFives = game.dice.filter((die) => die.ownerId === "p1").slice(0, 4);
+    const opponentFive = game.dice.find((die) => die.ownerId === "p2")!;
+
+    ownFives.forEach((die) => { die.value = 5; });
+    opponentFive.value = 5;
+    game.dice = [...ownFives, opponentFive];
+
+    expect(chooseBotAction(game, "hard")).toEqual({
+      type: "reroll",
+      dieIds: [opponentFive.id]
+    });
+    game.turnNumber = game.players.length * 2 + 1;
+    expect(isOpeningValueControlState(game)).toBe(false);
   });
 
   it("chooses a legal deterministic action at every difficulty without peeking at game RNG", () => {
@@ -373,11 +448,17 @@ function assertActionIsLegal(state: GameState, action: BotAction): void {
 
   if (action.type === "reroll") {
     expect(action.dieIds.length).toBeGreaterThan(0);
-    action.dieIds.forEach((dieId) => {
-      const die = state.dice.find((candidate) => candidate.id === dieId);
-      expect(die?.ownerId).toBe(player.id);
-      expect(die && isOnBoard(die)).toBe(false);
-    });
+    const dice = action.dieIds.map((dieId) => state.dice.find((candidate) => candidate.id === dieId)!);
+    if (dice.some((die) => die.ownerId !== player.id)) {
+      expect(action.dieIds).toHaveLength(1);
+      expect(dice[0].ownerId).not.toBe(player.id);
+      expect(canRerollOpponentDie(state, dice[0].id)).toBe(true);
+    } else {
+      dice.forEach((die) => {
+        expect(die.ownerId).toBe(player.id);
+        expect(isOnBoard(die)).toBe(false);
+      });
+    }
     return;
   }
 

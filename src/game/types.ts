@@ -70,6 +70,12 @@ export interface BoardChange {
   turnNumber: number;
 }
 
+export interface OpponentReroll {
+  playerId: string;
+  dieId: string;
+  turnNumber: number;
+}
+
 export interface OpeningRollRound {
   rolls: Array<{
     playerId: string;
@@ -89,6 +95,7 @@ export interface GameState {
   players: Player[];
   dice: Die[];
   tabletopMode: boolean;
+  opponentRerollEnabled: boolean;
   currentPlayerIndex: number;
   turnNumber: number;
   actionCredits: number;
@@ -101,6 +108,7 @@ export interface GameState {
   message: string;
   lastAction?: LastAction;
   boardChanges: BoardChange[];
+  opponentRerolls: OpponentReroll[];
   challengeRolls?: ChallengeRoll[];
 }
 
@@ -108,6 +116,7 @@ export interface NewGameOptions {
   playerCount: 2 | 3 | 4;
   seed?: string;
   tabletopMode?: boolean;
+  opponentRerollEnabled?: boolean;
   playerNames?: string[];
   playerControllers?: PlayerController[];
   skipOpeningRoll?: boolean;

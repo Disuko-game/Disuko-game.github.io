@@ -1,0 +1,81 @@
+{
+  "analysis_version": 1,
+  "design": {
+    "games": 1200,
+    "matched_triplets": 400,
+    "player_count": 2,
+    "opponent_rerolls_enabled_for_both": true,
+    "control_incentive": 0,
+    "treatment_incentive": 6000
+  },
+  "outcomes": {
+    "completed": 964,
+    "completion_rate": 0.8033333333333333,
+    "control_wins": 879,
+    "incentive_wins": 85,
+    "no_winner": 236,
+    "incentive_win_rate_completed": 0.08817427385892117,
+    "incentive_win_rate_ci_low": 0.06885826062820234,
+    "incentive_win_rate_ci_high": 0.10914806413004147,
+    "triplet_permutation_p": 9.99990000099999e-06
+  },
+  "starter_slices": {
+    "natural": {
+      "label": "Natural opening-roll starter",
+      "games": 400,
+      "completed": 321,
+      "incentive_wins": 35,
+      "control_wins": 286,
+      "incentive_win_rate": 0.10903426791277258
+    },
+    "incentive-starts": {
+      "label": "Forced: incentive bot starts",
+      "games": 400,
+      "completed": 316,
+      "incentive_wins": 28,
+      "control_wins": 288,
+      "incentive_win_rate": 0.08860759493670886
+    },
+    "control-starts": {
+      "label": "Forced: control bot starts",
+      "games": 400,
+      "completed": 327,
+      "incentive_wins": 22,
+      "control_wins": 305,
+      "incentive_win_rate": 0.0672782874617737
+    }
+  },
+  "game_flow": {
+    "average_turns": 77.93,
+    "average_actions": 164.425,
+    "termination_reasons": {
+      "repeated-state": 80,
+      "total-action-cap": 154,
+      "won": 964,
+      "action-cap": 2
+    }
+  },
+  "trace_usage": {
+    "traced_games": 120,
+    "truncated_traces": 26,
+    "by_population": {
+      "hard-control": {
+        "actions": 9515,
+        "rerolls": 625,
+        "opponent_rerolls": 416,
+        "games_with_opponent_reroll": 85,
+        "opponent_rerolls_per_traced_game": 3.466666666666667,
+        "opponent_reroll_action_share": 0.04372044140830268
+      },
+      "hard-incentive": {
+        "actions": 6178,
+        "rerolls": 2673,
+        "opponent_rerolls": 2673,
+        "games_with_opponent_reroll": 115,
+        "opponent_rerolls_per_traced_game": 22.275,
+        "opponent_reroll_action_share": 0.4326642926513435
+      }
+    }
+  },
+  "source_run": ".botlab\\runs\\hard-reroll-opening-cap400-1200"
+}

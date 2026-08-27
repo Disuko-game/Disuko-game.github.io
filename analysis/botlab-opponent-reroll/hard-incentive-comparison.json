@@ -1,0 +1,80 @@
+{
+  "analysis_version": 1,
+  "design": {
+    "games": 1200,
+    "matched_triplets": 400,
+    "player_count": 2,
+    "opponent_rerolls_enabled_for_both": true,
+    "control_incentive": 0,
+    "treatment_incentive": 6000
+  },
+  "outcomes": {
+    "completed": 887,
+    "completion_rate": 0.7391666666666666,
+    "control_wins": 460,
+    "incentive_wins": 427,
+    "no_winner": 313,
+    "incentive_win_rate_completed": 0.4813979706877114,
+    "incentive_win_rate_ci_low": 0.44592929088424355,
+    "incentive_win_rate_ci_high": 0.5182648401826484,
+    "triplet_permutation_p": 0.3264967350326497
+  },
+  "starter_slices": {
+    "natural": {
+      "label": "Natural opening-roll starter",
+      "games": 400,
+      "completed": 304,
+      "incentive_wins": 148,
+      "control_wins": 156,
+      "incentive_win_rate": 0.4868421052631579
+    },
+    "incentive-starts": {
+      "label": "Forced: incentive bot starts",
+      "games": 400,
+      "completed": 300,
+      "incentive_wins": 150,
+      "control_wins": 150,
+      "incentive_win_rate": 0.5
+    },
+    "control-starts": {
+      "label": "Forced: control bot starts",
+      "games": 400,
+      "completed": 283,
+      "incentive_wins": 129,
+      "control_wins": 154,
+      "incentive_win_rate": 0.4558303886925795
+    }
+  },
+  "game_flow": {
+    "average_turns": 35.99916666666667,
+    "average_actions": 83.42,
+    "termination_reasons": {
+      "won": 887,
+      "repeated-state": 310,
+      "action-cap": 3
+    }
+  },
+  "trace_usage": {
+    "traced_games": 120,
+    "truncated_traces": 2,
+    "by_population": {
+      "hard-control": {
+        "actions": 4311,
+        "rerolls": 317,
+        "opponent_rerolls": 200,
+        "games_with_opponent_reroll": 55,
+        "opponent_rerolls_per_traced_game": 1.6666666666666667,
+        "opponent_reroll_action_share": 0.046392948271862675
+      },
+      "hard-incentive": {
+        "actions": 5331,
+        "rerolls": 534,
+        "opponent_rerolls": 481,
+        "games_with_opponent_reroll": 73,
+        "opponent_rerolls_per_traced_game": 4.008333333333334,
+        "opponent_reroll_action_share": 0.0902269743012568
+      }
+    }
+  },
+  "source_run": ".botlab\\runs\\hard-reroll-incentive-1200"
+}

@@ -60,6 +60,7 @@ export interface Database {
           status: "lobby" | "playing" | "finished";
           player_count: number;
           tabletop_mode: boolean;
+          opponent_reroll_enabled: boolean;
           game_state: Json | null;
           state_version: number;
           turn_profile_id: string | null;
@@ -76,6 +77,7 @@ export interface Database {
           status?: "lobby" | "playing" | "finished";
           player_count: number;
           tabletop_mode?: boolean;
+          opponent_reroll_enabled?: boolean;
           game_state?: Json | null;
           state_version?: number;
           turn_profile_id?: string | null;
@@ -89,6 +91,7 @@ export interface Database {
           status?: "lobby" | "playing" | "finished";
           player_count?: number;
           tabletop_mode?: boolean;
+          opponent_reroll_enabled?: boolean;
           game_state?: Json | null;
           state_version?: number;
           turn_profile_id?: string | null;

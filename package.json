@@ -7,7 +7,10 @@
     "dev": "vite --host 0.0.0.0",
     "build": "node scripts/update-sw-version.mjs && tsc -b && vite build",
     "preview": "vite preview --host 0.0.0.0",
-    "test": "vitest run"
+    "test": "vitest run",
+    "botlab": "tsx scripts/botlab.ts",
+    "botlab:ui": "vite --config vite.botlab.config.ts --host 0.0.0.0",
+    "botlab:build": "vite build --config vite.botlab.config.ts"
   },
   "dependencies": {
     "@dimforge/rapier3d-compat": "^0.20.0",
@@ -21,6 +24,7 @@
     "@types/react-dom": "^19.1.5",
     "@types/three": "^0.185.4",
     "@vitejs/plugin-react": "^4.5.0",
+    "tsx": "^4.23.12",
     "typescript": "^5.8.3",
     "vite": "^6.3.5",
     "vitest": "^3.1.4"

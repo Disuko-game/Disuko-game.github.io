@@ -19,6 +19,7 @@ import { createPortal } from "react-dom";
 import { boxIndex, cellsForBox } from "./game/geometry";
 import {
   challengeViolation,
+  canRerollOpponentDie,
   completeOpeningRoll,
   conflictCellKeys,
   conflictDieIds,
@@ -189,6 +190,7 @@ type SetupStartOptions = {
   playerNames: string[];
   playerControllers: PlayerController[];
   tabletopMode: boolean;
+  opponentRerollEnabled: boolean;
 };
 
 type AppView = "home" | "local-setup" | "local-game" | "online-games" | "online-create" | "online-join" | "friends" | "settings";
@@ -201,6 +203,7 @@ type CreateGameRequest = {
   invitedProfileIds: string[];
   botSeats: Array<{ seatIndex: number; difficulty: BotDifficulty; name?: string }>;
   hasOpenSeats: boolean;
+  opponentRerollEnabled: boolean;
 };
 
 interface OnlineDashboardData {
@@ -501,8 +504,8 @@ export default function App(): ReactElement {
     };
   }, [profile, currentRoomSubscriptionKey]);
 
-  const startGame = ({ playerCount, tabletopMode, playerNames, playerControllers }: SetupStartOptions) => {
-    setGame(newGame({ playerCount, tabletopMode, playerNames, playerControllers }));
+  const startGame = ({ playerCount, tabletopMode, opponentRerollEnabled, playerNames, playerControllers }: SetupStartOptions) => {
+    setGame(newGame({ playerCount, tabletopMode, opponentRerollEnabled, playerNames, playerControllers }));
     setShowMenu(false);
     setView("local-game");
   };
@@ -562,7 +565,7 @@ export default function App(): ReactElement {
     }
   };
 
-  const handleCreateOnlineGame = async ({ playerCount, invitedProfileIds, botSeats, hasOpenSeats }: CreateGameRequest) => {
+  const handleCreateOnlineGame = async ({ playerCount, invitedProfileIds, botSeats, hasOpenSeats, opponentRerollEnabled }: CreateGameRequest) => {
     if (!profile) {
       return;
     }
@@ -574,7 +577,8 @@ export default function App(): ReactElement {
       const bundle = await createRoom(profile.id, {
         playerCount,
         visibility: hasOpenSeats ? "public" : "private",
-        botSeats
+        botSeats,
+        opponentRerollEnabled
       });
 
       await Promise.all(invitedProfileIds.map((friendProfileId) => inviteFriendToRoom(bundle.room.id, profile.id, friendProfileId)));
@@ -1399,6 +1403,7 @@ function OnlineCreateGameScreen({
     { kind: "disabled" },
     { kind: "disabled" }
   ]);
+  const [opponentRerollEnabled, setOpponentRerollEnabled] = useState(false);
   const [pickerIndex, setPickerIndex] = useState<number | null>(null);
   const enabledGuests = guestSlots.filter((slot) => slot.kind !== "disabled");
   const playerCount = (1 + enabledGuests.length) as 2 | 3 | 4;
@@ -1538,6 +1543,18 @@ function OnlineCreateGameScreen({
               </article>
             ))}
           </div>
+          <label className={`tabletop-toggle ${opponentRerollEnabled ? "is-active" : ""}`}>
+            <span>
+              Opponent rerolls
+              <small>Spend an action to reroll one opponent die; each die once per turn</small>
+            </span>
+            <input
+              type="checkbox"
+              checked={opponentRerollEnabled}
+              onChange={(event) => setOpponentRerollEnabled(event.currentTarget.checked)}
+            />
+            <span className="toggle-track" aria-hidden="true"><span /></span>
+          </label>
           <div className="create-game-summary" aria-live="polite">
             <strong>{playerCount}-player game</strong>
             <span>{botSeats.length > 0 ? `${botSeats.length} PC${botSeats.length === 1 ? "" : "s"}` : "All human"}</span>
@@ -1547,7 +1564,7 @@ function OnlineCreateGameScreen({
             className="primary-button"
             type="button"
             disabled={busy}
-            onClick={() => onCreate({ playerCount, invitedProfileIds, botSeats, hasOpenSeats })}
+            onClick={() => onCreate({ playerCount, invitedProfileIds, botSeats, hasOpenSeats, opponentRerollEnabled })}
           >
             {busy ? "Creating." : "Create Game"}
           </button>
@@ -2299,6 +2316,7 @@ function LocalSetupScreen({
 }): ReactElement {
   const [playerCount, setPlayerCount] = useState<2 | 3 | 4>(2);
   const [tabletopMode, setTabletopMode] = useState(false);
+  const [opponentRerollEnabled, setOpponentRerollEnabled] = useState(false);
   const [seatControllers, setSeatControllers] = useState<PlayerController[]>([
     { kind: "human" },
     { kind: "bot", difficulty: "medium" },
@@ -2338,7 +2356,7 @@ function LocalSetupScreen({
       return `Player ${index + 1}`;
     });
 
-    onStart({ playerCount, tabletopMode, playerNames, playerControllers });
+    onStart({ playerCount, tabletopMode, opponentRerollEnabled, playerNames, playerControllers });
   };
 
   return (
@@ -2419,6 +2437,19 @@ function LocalSetupScreen({
             </article>
           ))}
         </div>
+
+        <label className={`tabletop-toggle ${opponentRerollEnabled ? "is-active" : ""}`}>
+          <span>
+            Opponent rerolls
+            <small>Spend an action to reroll one opponent die; each die once per turn</small>
+          </span>
+          <input
+            type="checkbox"
+            checked={opponentRerollEnabled}
+            onChange={(event) => setOpponentRerollEnabled(event.currentTarget.checked)}
+          />
+          <span className="toggle-track" aria-hidden="true"><span /></span>
+        </label>
 
         <label className={`tabletop-toggle ${tabletopMode ? "is-active" : ""} ${tabletopUnavailable ? "is-disabled" : ""}`}>
           <span>
@@ -2582,7 +2613,7 @@ function GameScreen({
     !isBotTurn &&
     (!showOnlinePlayerNames || Boolean(onlinePlayerId && activePlayer.id === onlinePlayerId));
   const animatedBotRerollPlayer = rerollAnimation && !rerollAnimation.commitOnFinish
-    ? game.players.find((player) => player.id === rerollAnimation.dice[0]?.ownerId)
+    ? game.players.find((player) => player.id === rerollAnimation.finalGame.lastAction?.playerId)
     : undefined;
   const winner = game.winnerId ? game.players.find((player) => player.id === game.winnerId) : undefined;
   const gameStatusLabel = game.phase === "opening"
@@ -2629,10 +2660,10 @@ function GameScreen({
   const selectedRerollDice = useMemo(() => {
     if (game.mode !== "reroll") return [];
     const selectedIds = new Set(game.selectedDieIds);
-    return offBoardDice(game, activePlayer.id).filter((die) => selectedIds.has(die.id));
-  }, [activePlayer.id, game]);
+    return game.dice.filter((die) => selectedIds.has(die.id));
+  }, [game]);
   const rerollTrayDice = rerollAnimation?.dice ?? selectedRerollDice;
-  const rerollTrayPlayerId = rerollAnimation?.dice[0]?.ownerId ?? activePlayer.id;
+  const rerollTrayPlayerId = rerollTrayDice[0]?.ownerId ?? activePlayer.id;
   const rerollTrayPlayer = game.players.find((player) => player.id === rerollTrayPlayerId) ?? activePlayer;
   const rerollTrayVisible = Boolean(rerollAnimation) || (game.mode === "reroll" && canUseTurnControls);
   const hiddenTrayDieIds = useMemo(
@@ -3368,7 +3399,7 @@ function GameScreen({
     onCommit(setSelectedRerollDice(game, [...selectedIds]));
   };
 
-  const handleTrayGroup = (group: DiceValueGroup) => {
+  const handleTrayGroup = (group: DiceValueGroup, player: Player) => {
     if (!canUseTurnControls) {
       return;
     }
@@ -3379,8 +3410,22 @@ function GameScreen({
     }
 
     if (game.mode === "reroll") {
-      const nextDie = group.dice.find((die) => !selectedDieIdSet.has(die.id));
-      if (nextDie) setRerollDieSelected(nextDie.id, true);
+      const nextDie = group.dice.find(
+        (die) =>
+          !selectedDieIdSet.has(die.id) &&
+          (die.ownerId === activePlayer.id || canRerollOpponentDie(game, die.id))
+      );
+      if (nextDie) {
+        if (nextDie.ownerId === activePlayer.id) setRerollDieSelected(nextDie.id, true);
+        else {
+          setHasExplicitRerollSelection(true);
+          onCommit(setSelectedRerollDice(game, [nextDie.id]));
+        }
+      }
+      return;
+    }
+
+    if (player.id !== activePlayer.id) {
       return;
     }
 
@@ -3477,6 +3522,10 @@ function GameScreen({
       return;
     }
 
+    if (game.mode === "reroll") {
+      return;
+    }
+
     if (conflictDice.has(die.id)) {
       onCommit(challengeViolation(game, die.id));
       return;
@@ -3564,6 +3613,14 @@ function GameScreen({
   const handleDiePointerDown = (event: ReactPointerEvent<HTMLElement>, die: Die) => {
     if (!canUseTurnControls || rerollAnimation || game.phase === "won") {
       return;
+    }
+
+    if (game.mode === "reroll") {
+      const isSelected = game.selectedDieIds.includes(die.id);
+      const canDragOwnDie = die.ownerId === activePlayer.id && !isOnBoard(die);
+      const canDragOpponentDie = canRerollOpponentDie(game, die.id);
+
+      if (!isSelected && !canDragOwnDie && !canDragOpponentDie) return;
     }
 
     if (isOnBoard(die) && wasDieMovedThisTurn(game, die.id)) {
@@ -3661,16 +3718,19 @@ function GameScreen({
       return;
     }
 
-    if (game.mode === "reroll" && die.ownerId === activePlayer.id && !isOnBoard(die)) {
+    if (game.mode === "reroll" && !isOnBoard(die)) {
       const selected = game.selectedDieIds.includes(die.id);
       const droppedInRerollTray = Boolean(releaseElement?.closest(".floating-reroll-tray"));
-      const droppedInDiceTray = Boolean(releaseElement?.closest(`.dice-tray[data-player-id="${activePlayer.id}"] .dice-rail-groove`));
+      const droppedInOwnerTray = Boolean(
+        releaseElement?.closest(`[data-reroll-anchor-player-id="${die.ownerId}"] .dice-rail-groove`)
+      );
+      const canAddDie = die.ownerId === activePlayer.id || canRerollOpponentDie(game, die.id);
 
-      if (droppedInRerollTray && !selected) {
+      if (droppedInRerollTray && !selected && canAddDie) {
         setRerollDieSelected(die.id, true);
         return;
       }
-      if (droppedInDiceTray && selected) {
+      if (droppedInOwnerTray && selected) {
         setRerollDieSelected(die.id, false);
         return;
       }
@@ -3750,7 +3810,7 @@ function GameScreen({
       conflictCells={conflictCells}
       recentMoveHighlights={recentMoveHighlights}
       draggingDieId={transientDieId}
-      botDraggingDieId={botDragAnimation?.die.id ?? null}
+      botDraggingDieId={botDragAnimation?.die.id ?? rerollAnimation?.dice.find(isOnBoard)?.id ?? null}
       landingDieId={landingDieId}
       completionReward={completionRewardOverlay}
       conflictBlockerHighlight={conflictBlockerHighlight}
@@ -3769,15 +3829,22 @@ function GameScreen({
   const renderPlayerTray = (player: Player) => {
     const isActive = player.id === activePlayer.id;
     const isPinnedOnlineTray = Boolean(showOnlinePlayerNames && onlinePlayerId && player.id === onlinePlayerId);
-    const trayMode = isActive ? game.mode : "place";
+    const hasOwnRerollSelection = selectedRerollDice.some((die) => die.ownerId === activePlayer.id);
+    const isOpponentRerollTarget = game.opponentRerollEnabled
+      && game.mode === "reroll"
+      && !isActive
+      && !hasOwnRerollSelection;
+    const trayMode = isActive || isOpponentRerollTarget ? game.mode : "place";
     const trayDice = offBoardDice(game, player.id).filter((die) => !hiddenTrayDieIds.has(die.id));
     const trayGroups = groupDiceByValue(trayDice);
-    const disabled = !canUseTurnControls || Boolean(rerollAnimation) || !isActive || game.phase === "won";
+    const disabled = !canUseTurnControls || Boolean(rerollAnimation) || (!isActive && !isOpponentRerollTarget) || game.phase === "won";
     const rerollReady = canUseTurnControls && !rerollAnimation && isActive && game.mode === "reroll" && game.selectedDieIds.length > 0;
     const playerActionCountLabel = isActive
       ? canUseTurnControls
         ? trayStatusLabel
         : onlineWaitingTurnLabel ?? `${activePlayer.name}'s turn`
+      : isOpponentRerollTarget
+        ? "Choose one die"
       : isPinnedOnlineTray && onlineWaitingTurnLabel
         ? onlineWaitingTurnLabel
         : "0 actions";
@@ -3791,7 +3858,7 @@ function GameScreen({
     return (
       <DiceTray
         groups={trayGroups}
-        selectedIds={isActive && canUseTurnControls ? selectedDieIdSet : new Set<string>()}
+        selectedIds={canUseTurnControls && (isActive || isOpponentRerollTarget) ? selectedDieIdSet : new Set<string>()}
         player={player}
         mode={trayMode}
         draggingDieId={transientDieId}
@@ -3804,9 +3871,10 @@ function GameScreen({
         disabled={disabled}
         hidePlayerName={game.tabletopMode}
         showPlayerName={showOnlinePlayerNames || player.controller?.kind === "bot"}
+        showActionControls={isActive}
         className={trayClassName}
         style={{ "--tray-player-color": playerColorCssVars[player.color] } as CSSProperties}
-        onGroup={handleTrayGroup}
+        onGroup={(group) => handleTrayGroup(group, player)}
         onRoll={handleReroll}
         onCancelReroll={handleCancelReroll}
         onSetRerollCount={setRerollStackCount}
@@ -3876,6 +3944,17 @@ function GameScreen({
             hiddenDieId={transientDieId}
             hiddenDieIds={hiddenTrayDieIds}
             showPlayerNames={showOnlinePlayerNames}
+            canReroll={
+              canUseTurnControls
+              && game.mode === "reroll"
+              && !selectedRerollDice.some((die) => die.ownerId === activePlayer.id)
+            }
+            selectedIds={selectedDieIdSet}
+            onGroup={handleTrayGroup}
+            onDiePointerDown={handleDiePointerDown}
+            onDiePointerMove={handleDiePointerMove}
+            onDiePointerUp={handleDiePointerUp}
+            onDiePointerCancel={handleDiePointerCancel}
           />
 
           {board}
@@ -4275,7 +4354,14 @@ function OpponentTrayStrip({
   activePlayer,
   hiddenDieId,
   hiddenDieIds,
-  showPlayerNames = false
+  showPlayerNames = false,
+  canReroll,
+  selectedIds,
+  onGroup,
+  onDiePointerDown,
+  onDiePointerMove,
+  onDiePointerUp,
+  onDiePointerCancel
 }: {
   game: GameState;
   pinnedPlayer: Player;
@@ -4283,6 +4369,13 @@ function OpponentTrayStrip({
   hiddenDieId: string | null;
   hiddenDieIds: Set<string>;
   showPlayerNames?: boolean;
+  canReroll: boolean;
+  selectedIds: Set<string>;
+  onGroup: (group: DiceValueGroup, player: Player) => void;
+  onDiePointerDown: (event: ReactPointerEvent<HTMLElement>, die: Die) => void;
+  onDiePointerMove: (event: ReactPointerEvent<HTMLElement>) => void;
+  onDiePointerUp: (event: ReactPointerEvent<HTMLElement>) => void;
+  onDiePointerCancel: (event: ReactPointerEvent<HTMLElement>) => void;
 }): ReactElement {
   const opponents = game.players.filter((player) => player.id !== pinnedPlayer.id);
 
@@ -4315,8 +4408,15 @@ function OpponentTrayStrip({
               )}
               draggingDieId={hiddenDieId}
               emptyLabel="No dice"
-              readOnly
+              readOnly={!canReroll}
+              disabled={!canReroll}
               className="opponent-dice-rail"
+              selectedIds={selectedIds}
+              onGroup={(group) => onGroup(group, player)}
+              onDiePointerDown={onDiePointerDown}
+              onDiePointerMove={onDiePointerMove}
+              onDiePointerUp={onDiePointerUp}
+              onDiePointerCancel={onDiePointerCancel}
             />
           </article>
         );
@@ -4901,6 +5001,7 @@ function DiceTray({
   className,
   style,
   onGroup,
+  showActionControls = true,
   onRoll,
   onCancelReroll,
   onSetRerollCount,
@@ -4930,6 +5031,7 @@ function DiceTray({
   className?: string;
   style?: CSSProperties;
   onGroup: (group: DiceValueGroup) => void;
+  showActionControls?: boolean;
   onRoll: () => void;
   onCancelReroll: () => void;
   onSetRerollCount: (group: DiceValueGroup, count: number) => void;
@@ -4988,22 +5090,24 @@ function DiceTray({
             onDiePointerCancel={onDiePointerCancel}
           />
         </div>
-        <div className="tray-action-column">
-          {mode === "reroll" && !disabled ? (
-            <button className="reroll-cancel-button" type="button" onClick={onCancelReroll}>
-              Cancel
-            </button>
-          ) : null}
-          <ActionButton
-            color={rollColor}
-            icon={<MiniDieIcon />}
-            label={rollLabel}
-            active={rollActive}
-            disabled={disabled || rollDisabled}
-            className="tray-roll-button"
-            onClick={onRoll}
-          />
-        </div>
+        {showActionControls ? (
+          <div className="tray-action-column">
+            {mode === "reroll" && !disabled ? (
+              <button className="reroll-cancel-button" type="button" onClick={onCancelReroll}>
+                Cancel
+              </button>
+            ) : null}
+            <ActionButton
+              color={rollColor}
+              icon={<MiniDieIcon />}
+              label={rollLabel}
+              active={rollActive}
+              disabled={disabled || rollDisabled}
+              className="tray-roll-button"
+              onClick={onRoll}
+            />
+          </div>
+        ) : null}
       </div>
     </section>
   );

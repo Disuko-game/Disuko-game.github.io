@@ -1,0 +1,87 @@
+{
+  "version": 1,
+  "id": "hard-vs-random",
+  "name": "100,000 Hard versus random candidates",
+  "games": 100000,
+  "playerCounts": [
+    2
+  ],
+  "seed": "hard-random-v1",
+  "starterMode": "natural-and-forced",
+  "seatRotation": true,
+  "concurrency": 8,
+  "maxTurns": 1000,
+  "maxActionsPerTurn": 64,
+  "maxTotalActions": 2000,
+  "maxRepeatedStates": 3,
+  "maxTraceActions": 250,
+  "traceEvery": 1000,
+  "populations": [
+    {
+      "id": "hard",
+      "label": "Unchanged Hard",
+      "share": 0.5,
+      "source": {
+        "kind": "preset",
+        "difficulty": "hard"
+      }
+    },
+    {
+      "id": "candidates",
+      "label": "Random candidates",
+      "share": 0.5,
+      "source": {
+        "kind": "random",
+        "candidateCount": 128,
+        "template": {
+          "idPrefix": "candidate",
+          "labelPrefix": "Candidate",
+          "basePreset": "hard",
+          "policy": "search",
+          "knobs": {
+            "weights.completion": {
+              "mode": "random",
+              "min": 2000,
+              "max": 16000
+            },
+            "weights.nextOpponentThreat": {
+              "mode": "random",
+              "min": 0,
+              "max": 50000
+            },
+            "weights.distantOpponentThreat": {
+              "mode": "random",
+              "min": 0,
+              "max": 60000
+            },
+            "weights.lastValueReserve": {
+              "mode": "random",
+              "min": 0,
+              "max": 8000
+            },
+            "weights.actionBankCredit": {
+              "mode": "random",
+              "min": 0,
+              "max": 30000
+            },
+            "search.rootBeam": {
+              "mode": "random",
+              "min": 3,
+              "max": 10
+            },
+            "search.nodeBudget": {
+              "mode": "random",
+              "min": 8,
+              "max": 60
+            }
+          }
+        }
+      }
+    }
+  ],
+  "optimization": {
+    "candidatePopulationId": "candidates",
+    "rounds": 6,
+    "holdoutShare": 0.2
+  }
+}

@@ -1,0 +1,60 @@
+{
+  "version": 1,
+  "id": "competitive-reroll-off",
+  "name": "Competitive baseline without opponent rerolls",
+  "games": 1200,
+  "playerCounts": [
+    2,
+    3,
+    4
+  ],
+  "opponentRerollEnabled": false,
+  "seed": "competitive-opponent-reroll-v1",
+  "starterMode": "natural-and-forced",
+  "seatRotation": true,
+  "concurrency": 8,
+  "maxTurns": 1000,
+  "maxActionsPerTurn": 64,
+  "maxTotalActions": 2000,
+  "maxRepeatedStates": 3,
+  "maxTraceActions": 250,
+  "traceEvery": 10,
+  "populations": [
+    {
+      "id": "very-easy",
+      "label": "Very Easy",
+      "share": 1,
+      "source": {
+        "kind": "preset",
+        "difficulty": "very-easy"
+      }
+    },
+    {
+      "id": "easy",
+      "label": "Easy",
+      "share": 1,
+      "source": {
+        "kind": "preset",
+        "difficulty": "easy"
+      }
+    },
+    {
+      "id": "medium",
+      "label": "Medium",
+      "share": 1,
+      "source": {
+        "kind": "preset",
+        "difficulty": "medium"
+      }
+    },
+    {
+      "id": "hard",
+      "label": "Hard",
+      "share": 1,
+      "source": {
+        "kind": "preset",
+        "difficulty": "hard"
+      }
+    }
+  ]
+}

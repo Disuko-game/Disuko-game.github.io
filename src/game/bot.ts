@@ -1,4 +1,5 @@
 import {
+  canRerollOpponentDie,
   challengeViolation,
   currentPlayer,
   detectConflicts,
@@ -57,6 +58,8 @@ const HARD_ACTION_BANK_MAX_MOVES = 5;
 const HARD_ACTION_BANK_CREDIT_VALUE = 16_000;
 const HARD_ACTION_BANK_MOVE_COST = 500;
 const HARD_ACTION_BANK_MIN_ADVANTAGE = 1_000;
+const HARD_VALUE_CONTROL_WEIGHT = 3_000;
+const OPENING_VALUE_CONTROL_MAX_BOARD_DICE = 6;
 const DEFAULT_MAX_TURN_ACTIONS = 64;
 const WIN_SCORE = 1_000_000_000;
 
@@ -109,6 +112,13 @@ export function legalBotActions(state: GameState): BotAction[] {
   });
 
   rerollCandidateIds(trayDice).forEach((dieIds) => actions.push({ type: "reroll", dieIds }));
+  if (state.opponentRerollEnabled) {
+    state.dice
+      .filter((die) => die.ownerId !== player.id && canRerollOpponentDie(state, die.id))
+      .sort((left, right) => left.id.localeCompare(right.id))
+      .forEach((die) => actions.push({ type: "reroll", dieIds: [die.id] }));
+  }
+
 
   return actions.length > 0 ? actions : [{ type: "pass" }];
 }
@@ -621,7 +631,9 @@ function fastActionScore(
       return count + (die && legalCellCountForValue(state, die.value) === 0 ? 1 : 0);
     }, 0);
 
-    return -3_000 + blockedDice * 2_000 - action.dieIds.length;
+    const controlGain = expectedOpponentRerollValueControlGain(state, action, actorId);
+    return -3_000 + blockedDice * 2_000 - action.dieIds.length
+      + controlGain * HARD_VALUE_CONTROL_WEIGHT;
   }
 
   const die = dieById.get(action.dieId);
@@ -775,6 +787,10 @@ function immediateActionValue(before: GameState, after: GameState, action: BotAc
     score -= 1_500;
   } else if (action.type === "reroll") {
     score -= 2_500;
+    if (isOpeningValueControlState(before)) {
+      score += (valueControlStrength(after, playerId) - valueControlStrength(before, playerId))
+        * HARD_VALUE_CONTROL_WEIGHT;
+    }
   } else if (action.type === "pass") {
     score -= 8_000;
   }
@@ -839,9 +855,93 @@ function evaluateHardState(state: GameState, rootPlayerId: string, allOpponentTh
     : 0;
   return evaluateState(state, rootPlayerId)
     + (state.phase === "playing" ? hardValueReserveScore(state, rootPlayerId) : 0)
+
     - opponentThreatPenalty;
 }
 
+/**
+ * Scores values controlled exclusively by one player. Squaring the owned count
+ * makes breaking an opponent's final matching die more valuable when it creates
+ * a larger monopoly, while still recognizing control that starts with one die.
+ */
+export function isOpeningValueControlState(state: GameState): boolean {
+  const withinOpeningRounds = state.turnNumber <= state.players.length * 2;
+  return withinOpeningRounds
+    && state.dice.filter(isOnBoard).length <= OPENING_VALUE_CONTROL_MAX_BOARD_DICE;
+}
+
+export function valueControlStrength(state: GameState, playerId: string): number {
+  const owned = new Map<DiceValue, number>();
+  const opposing = new Map<DiceValue, number>();
+  state.dice.forEach((die) => {
+    const counts = die.ownerId === playerId ? owned : opposing;
+    counts.set(die.value, (counts.get(die.value) ?? 0) + 1);
+  });
+  return DICE_VALUES.reduce((score, value) => {
+    return score + valueControlContribution(owned.get(value) ?? 0, opposing.get(value) ?? 0);
+  }, 0);
+}
+
+/** Expected change in value control from a legal single-opponent-die reroll. */
+export function expectedOpponentRerollValueControlGain(
+  state: GameState,
+  action: BotAction,
+  playerId: string
+): number {
+  if (action.type !== "reroll" || action.dieIds.length !== 1) return 0;
+  const target = state.dice.find((die) => die.id === action.dieIds[0]);
+  if (!target || target.ownerId === playerId || !isOpeningValueControlState(state)) return 0;
+
+  const owned = new Map<DiceValue, number>();
+  const opposing = new Map<DiceValue, number>();
+  state.dice.forEach((die) => {
+    const counts = die.ownerId === playerId ? owned : opposing;
+    counts.set(die.value, (counts.get(die.value) ?? 0) + 1);
+  });
+  const contribution = (value: DiceValue, opposingCount: number) =>
+    valueControlContribution(owned.get(value) ?? 0, opposingCount);
+  const oldValue = target.value;
+  const oldOpposing = opposing.get(oldValue) ?? 0;
+  let totalDelta = 0;
+  DICE_VALUES.forEach((newValue) => {
+    if (newValue === oldValue) return;
+    const newOpposing = opposing.get(newValue) ?? 0;
+    totalDelta += contribution(oldValue, oldOpposing - 1) - contribution(oldValue, oldOpposing);
+    totalDelta += contribution(newValue, newOpposing + 1) - contribution(newValue, newOpposing);
+  });
+  return totalDelta / DICE_VALUES.length;
+}
+
+/** Expected reduction in legal placements when rerolling an opponent's final die. */
+export function expectedOpponentRerollThreatReduction(
+  state: GameState,
+  action: BotAction,
+  playerId: string
+): number {
+  if (action.type !== "reroll" || action.dieIds.length !== 1) return 0;
+  const target = state.dice.find((die) => die.id === action.dieIds[0]);
+  if (!target || target.ownerId === playerId || remainingDiceCount(state, target.ownerId) !== 1) return 0;
+
+  const currentOptions = legalCellCountForValue(state, target.value);
+  const expectedOptions = DICE_VALUES.reduce(
+    (sum, value) => sum + legalCellCountForValue(state, value),
+    0
+  ) / DICE_VALUES.length;
+  return Math.max(0, currentOptions - expectedOptions);
+}
+
+export function isTacticalOpponentRerollAction(
+  state: GameState,
+  action: BotAction,
+  playerId: string
+): boolean {
+  return expectedOpponentRerollValueControlGain(state, action, playerId) > 0
+    || expectedOpponentRerollThreatReduction(state, action, playerId) > 0;
+}
+
+function valueControlContribution(owned: number, opposing: number): number {
+  return owned >= 1 && opposing === 0 ? owned * 4 : 0;
+}
 function hardValueReserveScore(state: GameState, playerId: string): number {
   const counts = new Map<DiceValue, number>();
   offBoardDice(state, playerId).forEach((die) => counts.set(die.value, (counts.get(die.value) ?? 0) + 1));
@@ -1062,10 +1162,17 @@ function diceInTargetedConflicts(state: GameState, targetDieId: string): Die[] {
 
 function strategicActions(state: GameState, actions: BotAction[]): BotAction[] {
   const dieById = new Map(state.dice.map((die) => [die.id, die]));
+  const actorId = currentPlayer(state).id;
   const seen = new Set<string>();
   const strategic: BotAction[] = [];
 
   actions.forEach((action) => {
+    const targetsOpponent = action.type === "reroll"
+      && action.dieIds.some((dieId) => dieById.get(dieId)?.ownerId !== actorId);
+    if (targetsOpponent && !isTacticalOpponentRerollAction(state, action, actorId)) {
+      return;
+    }
+
     let key = actionKey(action);
 
     if (action.type === "place") {

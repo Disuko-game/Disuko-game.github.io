@@ -35,6 +35,7 @@ function room(game: GameState): DisukoRoomWithGameState {
     status: "playing",
     player_count: 2,
     tabletop_mode: false,
+    opponent_reroll_enabled: false,
     game_state: game,
     state_version: 4,
     turn_profile_id: "profile-1",

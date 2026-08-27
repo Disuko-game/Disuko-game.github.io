@@ -1,0 +1,39 @@
+{
+  "version": 1,
+  "id": "hard-vs-medium",
+  "name": "1,000 Hard versus Medium",
+  "games": 1000,
+  "playerCounts": [
+    2
+  ],
+  "seed": "hard-medium-v1",
+  "starterMode": "natural-and-forced",
+  "seatRotation": true,
+  "concurrency": 4,
+  "maxTurns": 1000,
+  "maxActionsPerTurn": 64,
+  "maxTotalActions": 2000,
+  "maxRepeatedStates": 3,
+  "maxTraceActions": 250,
+  "traceEvery": 100,
+  "populations": [
+    {
+      "id": "hard",
+      "label": "Unchanged Hard",
+      "share": 0.5,
+      "source": {
+        "kind": "preset",
+        "difficulty": "hard"
+      }
+    },
+    {
+      "id": "medium",
+      "label": "Unchanged Medium",
+      "share": 0.5,
+      "source": {
+        "kind": "preset",
+        "difficulty": "medium"
+      }
+    }
+  ]
+}
