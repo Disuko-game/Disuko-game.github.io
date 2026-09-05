@@ -3,6 +3,7 @@ import react from "@vitejs/plugin-react";
 
 export default defineConfig({
   base: "./",
+  worker: { format: "es" },
   server: {
     host: "0.0.0.0",
     strictPort: true,

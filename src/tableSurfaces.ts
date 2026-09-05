@@ -141,7 +141,7 @@ function baseGeometry(options: ReturnType<typeof dimensions>): THREE.BufferGeome
 }
 
 /** Shared maple texture/materials and individually disposable surface geometry. */
-export function createTableSurfaceFactory(renderer: THREE.WebGLRenderer) {
+export function createTableSurfaceFactory(renderer: THREE.WebGLRenderer, mobile = false) {
   let disposed = false;
   const ownedSurfaces = new Set<TableSurface>();
   const materials = new Map<TableSurfaceKind, { rim: THREE.MeshPhysicalMaterial; base: THREE.MeshPhysicalMaterial }>();
@@ -149,12 +149,12 @@ export function createTableSurfaceFactory(renderer: THREE.WebGLRenderer) {
     materials.set(kind, {
       rim: new THREE.MeshPhysicalMaterial({
         color: kind === "tray" ? 0xf0d3a4 : 0xbd9469,
-        roughness: 0.46, metalness: 0, clearcoat: 0.12, clearcoatRoughness: 0.36, bumpScale: 0.010,
+        roughness: 0.46, metalness: 0, clearcoat: mobile ? 0 : 0.12, clearcoatRoughness: 0.36, bumpScale: 0.010,
         envMapIntensity: 0.45
       }),
       base: new THREE.MeshPhysicalMaterial({
         color: 0x95653c,
-        roughness: 0.49, metalness: 0, clearcoat: 0.09, clearcoatRoughness: 0.38, bumpScale: 0.008,
+        roughness: 0.49, metalness: 0, clearcoat: mobile ? 0 : 0.09, clearcoatRoughness: 0.38, bumpScale: 0.008,
         envMapIntensity: 0.32
       })
     });
@@ -172,13 +172,14 @@ export function createTableSurfaceFactory(renderer: THREE.WebGLRenderer) {
     texture.anisotropy = Math.min(4, renderer.capabilities.getMaxAnisotropy());
     for (const { rim, base } of materials.values()) {
       rim.map = base.map = texture;
-      rim.bumpMap = base.bumpMap = texture;
+      if (!mobile) rim.bumpMap = base.bumpMap = texture;
       rim.needsUpdate = base.needsUpdate = true;
     }
     for (const surface of ownedSurfaces) {
       const rim = surface.group.getObjectByName("Rounded maple lip and inside walls") as THREE.Mesh;
       const material = rim.material as THREE.MeshPhysicalMaterial;
-      material.map = material.bumpMap = texture;
+      material.map = texture;
+      if (!mobile) material.bumpMap = texture;
       material.needsUpdate = true;
     }
     // Materials already provide a warm maple fallback if the optional texture fails.

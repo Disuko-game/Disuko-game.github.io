@@ -1,11 +1,20 @@
 import * as THREE from "three";
 
+/** A zero-sized budget means no GPU shadow target or shadow rendering pass. */
+export function configureTableShadows(renderer: THREE.WebGLRenderer, key: THREE.DirectionalLight, size: number) {
+  const enabled = size > 0;
+  renderer.shadowMap.enabled = enabled;
+  renderer.shadowMap.autoUpdate = false;
+  renderer.shadowMap.needsUpdate = false;
+  key.castShadow = enabled;
+  if (enabled) key.shadow.mapSize.set(size, size);
+}
+
 /** One tabletop light rig, shared by every die and every receiving surface. */
-export function createTableLighting(scene: THREE.Scene, renderer: THREE.WebGLRenderer) {
+export function createTableLighting(scene: THREE.Scene, renderer: THREE.WebGLRenderer, shadowSize = 2048) {
   renderer.outputColorSpace = THREE.SRGBColorSpace;
   renderer.toneMapping = THREE.ACESFilmicToneMapping;
   renderer.toneMappingExposure = 0.95;
-  renderer.shadowMap.enabled = true;
   renderer.shadowMap.type = THREE.PCFShadowMap;
   renderer.shadowMap.autoUpdate = false;
 
@@ -39,8 +48,7 @@ export function createTableLighting(scene: THREE.Scene, renderer: THREE.WebGLRen
   scene.add(new THREE.HemisphereLight(0xfff6e7, 0x74502f, 0.65));
   const key = new THREE.DirectionalLight(0xfff3df, 2.4);
   key.position.set(-8, 18, -12);
-  key.castShadow = true;
-  key.shadow.mapSize.set(2048, 2048);
+  configureTableShadows(renderer, key, shadowSize);
   key.shadow.bias = -0.00012;
   key.shadow.normalBias = 0.018;
   key.shadow.radius = 4;

@@ -95,9 +95,9 @@ import { isTabletopViewportSupported } from "./tabletopFit";
 import {
   REROLL_GATHER_DURATION_MS,
   REROLL_TUMBLE_DURATION_MS,
-  preloadRerollPhysics,
   rerollVariantFromKey
 } from "./game/rerollTumbles";
+import { preloadRollPhysics } from "./game/rollPhysicsClient";
 
 const loadRerollDice3D = () => import("./RerollDice3D");
 const RerollDice3D = lazy(loadRerollDice3D);
@@ -2684,7 +2684,7 @@ function GameScreen({
   useEffect(() => {
     if (game.phase === "opening" || game.mode === "reroll" || isBotTurn || onlinePlayerId !== undefined) {
       void loadRerollDice3D();
-      void preloadRerollPhysics().catch(() => undefined);
+      void preloadRollPhysics().catch(() => undefined);
     }
   }, [game.mode, isBotTurn, onlinePlayerId]);
 
