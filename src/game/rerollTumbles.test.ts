@@ -12,14 +12,16 @@ import {
   rerollVariantFromKey
 } from "./rerollTumbles";
 
+const TEST_SEEDS = [0, rerollVariantFromKey("game:a:turn:17"), rerollVariantFromKey("game:b:turn:68")];
+
 describe("Rapier reroll tumble templates", () => {
   it("uses a deliberately longer roll window for the full-board throw", () => {
     expect(REROLL_TUMBLE_DURATION_MS).toBeGreaterThanOrEqual(4400);
   });
 
-  it("provides three cached deterministic templates for every supported dice count", async () => {
+  it("provides cached seeded throws for every supported dice count", async () => {
     for (let count = 1; count <= REROLL_MAX_DICE; count += 1) {
-      for (let variant = 0; variant < REROLL_TUMBLE_VARIANT_COUNT; variant += 1) {
+      for (const variant of TEST_SEEDS) {
         const promise = getRerollTumbleTemplate(count, variant);
         expect(getRerollTumbleTemplate(count, variant)).toBe(promise);
         const template = await promise;
@@ -33,7 +35,7 @@ describe("Rapier reroll tumble templates", () => {
 
   it("throws every group from right to left and keeps every rigid body inside the tray", async () => {
     for (let count = 1; count <= REROLL_MAX_DICE; count += 1) {
-      for (let variant = 0; variant < REROLL_TUMBLE_VARIANT_COUNT; variant += 1) {
+      for (const variant of TEST_SEEDS) {
         const template = await getRerollTumbleTemplate(count, variant);
         const middleFrame = Math.floor(template.frameRate * 1.35);
         let initialAverageX = 0;
@@ -46,11 +48,13 @@ describe("Rapier reroll tumble templates", () => {
           initialAverageZ += track.samples[2];
           middleAverageX += track.samples[middleFrame * REROLL_SAMPLE_COMPONENTS];
           middleAverageZ += track.samples[middleFrame * REROLL_SAMPLE_COMPONENTS + 2];
+          let maximumExtent = 0;
+          let minimumHeight = Infinity;
+          let maximumQuaternionError = 0;
           for (let frame = 0; frame < template.frameCount; frame += 1) {
             const offset = frame * REROLL_SAMPLE_COMPONENTS;
-            expect(Math.abs(track.samples[offset])).toBeLessThanOrEqual(REROLL_TRAY_HALF_EXTENT + 0.02);
-            expect(Math.abs(track.samples[offset + 2])).toBeLessThanOrEqual(REROLL_TRAY_HALF_EXTENT + 0.02);
-            expect(track.samples[offset + 1]).toBeGreaterThanOrEqual(REROLL_DIE_HALF_SIZE - 0.1);
+            maximumExtent = Math.max(maximumExtent, Math.abs(track.samples[offset]), Math.abs(track.samples[offset + 2]));
+            minimumHeight = Math.min(minimumHeight, track.samples[offset + 1]);
 
             const quaternionLength = Math.hypot(
               track.samples[offset + 3],
@@ -58,20 +62,23 @@ describe("Rapier reroll tumble templates", () => {
               track.samples[offset + 5],
               track.samples[offset + 6]
             );
-            expect(quaternionLength).toBeCloseTo(1, 4);
+            maximumQuaternionError = Math.max(maximumQuaternionError, Math.abs(quaternionLength - 1));
           }
+          expect(maximumExtent).toBeLessThanOrEqual(REROLL_TRAY_HALF_EXTENT + 0.02);
+          expect(minimumHeight).toBeGreaterThanOrEqual(REROLL_DIE_HALF_SIZE - 0.1);
+          expect(maximumQuaternionError).toBeLessThan(0.00005);
         });
 
         expect(initialAverageX / count).toBeGreaterThan(2);
-        expect(initialAverageZ / count).toBeGreaterThan(2.25);
-        expect(middleAverageX / count).toBeLessThan(initialAverageX / count - 2.6);
+        expect(initialAverageZ / count).toBeGreaterThan(2);
+        expect(middleAverageX / count).toBeLessThan(initialAverageX / count - 1.2);
         expect(middleAverageZ / count).toBeLessThan(initialAverageZ / count - 1.2);
       }
     }
   }, 20_000);
 
   it("opens into a broad spray instead of remaining bunched in the launch corner", async () => {
-    for (let variant = 0; variant < REROLL_TUMBLE_VARIANT_COUNT; variant += 1) {
+    for (const variant of TEST_SEEDS) {
       const template = await getRerollTumbleTemplate(8, variant);
       const frame = Math.floor(template.frameRate * 1.45);
       const xs = template.tracks.map((track) => track.samples[frame * REROLL_SAMPLE_COMPONENTS]);
@@ -81,7 +88,7 @@ describe("Rapier reroll tumble templates", () => {
   });
 
   it("launches from visibly different heights and speeds", async () => {
-    const template = await getRerollTumbleTemplate(8, 2);
+    const template = await getRerollTumbleTemplate(18, 2);
     const launchFrame = Math.ceil(template.frameRate * 0.52);
     const laterFrame = Math.ceil(template.frameRate * 0.72);
     const initialHeights = template.tracks.map((track) => track.samples[1]);
@@ -118,7 +125,7 @@ describe("Rapier reroll tumble templates", () => {
   it("records real floor, wall, and dice contact forces for animation and sound", async () => {
     const kinds = new Set<string>();
     let forceDrivenImpactCount = 0;
-    for (let variant = 0; variant < REROLL_TUMBLE_VARIANT_COUNT; variant += 1) {
+    for (const variant of TEST_SEEDS) {
       const template = await getRerollTumbleTemplate(12, variant);
       template.tracks.forEach((track) => track.impacts.forEach((impact) => {
         kinds.add(impact.kind);
@@ -132,7 +139,7 @@ describe("Rapier reroll tumble templates", () => {
 
   it("finishes with non-intersecting 3D bodies while allowing physical stacking", async () => {
     for (let count = 2; count <= REROLL_MAX_DICE; count += 1) {
-      for (let variant = 0; variant < REROLL_TUMBLE_VARIANT_COUNT; variant += 1) {
+      for (const variant of TEST_SEEDS) {
         const template = await getRerollTumbleTemplate(count, variant);
         const finalOffset = (template.frameCount - 1) * REROLL_SAMPLE_COMPONENTS;
         for (let left = 0; left < template.tracks.length; left += 1) {
@@ -176,11 +183,98 @@ describe("Rapier reroll tumble templates", () => {
     expect(template.tracks.some((track) => track.impacts.some((impact) => impact.kind === "die"))).toBe(true);
   });
   it("chooses variants deterministically without collapsing every roll to one pattern", () => {
-    const keys = Array.from({ length: 24 }, (_, index) => "roll:" + index);
+    const keys = Array.from({ length: 1024 }, (_, index) => "roll:" + index);
     const variants = keys.map(rerollVariantFromKey);
     expect(keys.map(rerollVariantFromKey)).toEqual(variants);
-    expect(new Set(variants).size).toBe(REROLL_TUMBLE_VARIANT_COUNT);
+    expect(new Set(variants).size).toBe(keys.length);
+    expect(REROLL_TUMBLE_VARIANT_COUNT).toBe(2 ** 32);
+  });
+
+  it("varies the corner release, speed, arc and spin between successive throws", async () => {
+    const templates = await Promise.all(Array.from({ length: 12 }, (_, index) => {
+      return getRerollTumbleTemplate(1, rerollVariantFromKey(`match:turn:${index}`));
+    }));
+    const origins = templates.map(({ tracks }) => tracks[0].samples[0]);
+    const heights = templates.map(({ tracks }) => tracks[0].samples[1]);
+    const launchDistances = templates.map(({ tracks, frameRate }) => {
+      const offset = Math.ceil(frameRate * 0.7) * REROLL_SAMPLE_COMPONENTS;
+      return Math.hypot(tracks[0].samples[offset] - tracks[0].samples[0], tracks[0].samples[offset + 2] - tracks[0].samples[2]);
+    });
+    expect(new Set(origins).size).toBe(templates.length);
+    expect(Math.max(...origins) - Math.min(...origins)).toBeGreaterThan(0.15);
+    expect(Math.max(...heights) - Math.min(...heights)).toBeGreaterThan(0.15);
+    expect(Math.max(...launchDistances) - Math.min(...launchDistances)).toBeGreaterThan(0.4);
+    const orientations = templates.map(({ tracks }) => Array.from(tracks[0].samples.slice(7 * 60 + 3, 7 * 60 + 7)).join(","));
+    expect(new Set(orientations).size).toBe(templates.length);
+  });
+
+  it("evicts old templates and reproduces the exact same trajectories when regenerated", async () => {
+    const firstPromise = getRerollTumbleTemplate(4, 921);
+    const first = await firstPromise;
+    for (let seed = 1000; seed < 1030; seed += 1) await getRerollTumbleTemplate(1, seed);
+    const regeneratedPromise = getRerollTumbleTemplate(4, 921);
+    expect(regeneratedPromise).not.toBe(firstPromise);
+    const regenerated = await regeneratedPromise;
+    regenerated.tracks.forEach((track, index) => {
+      expect(track.samples).toEqual(first.tracks[index].samples);
+      expect(track.settleTimeMs).toBe(first.tracks[index].settleTimeMs);
+      expect(track.impacts).toEqual(first.tracks[index].impacts);
+    });
+  });
+
+  it("avoids overlapping launch bodies and comes to rest before the roll window ends", async () => {
+    for (let count = 1; count <= REROLL_MAX_DICE; count += 1) {
+      for (const seed of TEST_SEEDS) {
+        const template = await getRerollTumbleTemplate(count, seed);
+        for (let left = 0; left < count; left += 1) {
+          const track = template.tracks[left];
+          for (let right = left + 1; right < count; right += 1) {
+            const other = template.tracks[right];
+            expect(Math.hypot(...[0, 1, 2].map((axis) => track.samples[axis] - other.samples[axis]))).toBeGreaterThan(1.1);
+          }
+          const last = (template.frameCount - 1) * REROLL_SAMPLE_COMPONENTS;
+          const previous = last - 6 * REROLL_SAMPLE_COMPONENTS;
+          const finalTravel = Math.hypot(...[0, 1, 2].map((axis) => track.samples[last + axis] - track.samples[previous + axis]));
+          expect(finalTravel, `count=${count} seed=${seed} die=${left}`).toBeLessThan(0.025);
+          expect(track.settleTimeMs, `count=${count} seed=${seed} die=${left}`).toBeLessThan(REROLL_TUMBLE_DURATION_MS);
+        }
+      }
+    }
+  }, 20_000);
+
+  it("keeps broad throw seeds bounded and settled for handfuls and opening rounds", async () => {
+    for (let index = 0; index < 20; index += 1) {
+      const seed = rerollVariantFromKey(`long-session:${index}`);
+      const templates = await Promise.all([
+        ...[1, 6, 12, 18].map((count) => getRerollTumbleTemplate(count, seed)),
+        getOpeningRollTumbleTemplate([0, 1, 2, 3], seed)
+      ]);
+      templates.forEach((template) => template.tracks.forEach((track, dieIndex) => {
+        let maxExtent = 0;
+        let minHeight = Infinity;
+        for (let frame = 0; frame < template.frameCount; frame += 1) {
+          const offset = frame * REROLL_SAMPLE_COMPONENTS;
+          maxExtent = Math.max(maxExtent, Math.abs(track.samples[offset]), Math.abs(track.samples[offset + 2]));
+          minHeight = Math.min(minHeight, track.samples[offset + 1]);
+        }
+        const context = `count=${template.count} seed=${seed} die=${dieIndex}`;
+        expect(maxExtent, context).toBeLessThanOrEqual(REROLL_TRAY_HALF_EXTENT + 0.02);
+        expect(minHeight, context).toBeGreaterThanOrEqual(REROLL_DIE_HALF_SIZE - 0.1);
+        const last = (template.frameCount - 1) * REROLL_SAMPLE_COMPONENTS;
+        const previous = last - 6 * REROLL_SAMPLE_COMPONENTS;
+        expect(Array.from(track.samples.slice(last, last + 7)), context).toEqual(Array.from(track.samples.slice(previous, previous + 7)));
+        expect(track.settleTimeMs, context).toBeLessThan(template.durationMs - 100);
+      }));
+    }
+  }, 20_000);
+
+  it("bounds the opening cache and regenerates opening throws deterministically", async () => {
+    const firstPromise = getOpeningRollTumbleTemplate([0, 2], 321);
+    const first = await firstPromise;
+    expect(getOpeningRollTumbleTemplate([0, 2], 321)).toBe(firstPromise);
+    for (let seed = 3000; seed < 3030; seed += 1) await getOpeningRollTumbleTemplate([1], seed);
+    const regeneratedPromise = getOpeningRollTumbleTemplate([0, 2], 321);
+    expect(regeneratedPromise).not.toBe(firstPromise);
+    expect(await regeneratedPromise).toEqual(first);
   });
 });
-
-

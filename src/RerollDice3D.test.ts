@@ -1,18 +1,11 @@
 import { describe, expect, it } from "vitest";
 import { Euler, Quaternion, Vector3 } from "three";
 import type { DiceValue } from "./game/types";
-import { REROLL_GATHER_DURATION_MS } from "./game/rerollTumbles";
 import {
-  DIE_EDGE_RADIUS,
-  DIE_RENDER_SIZE,
-  DIE_PIP_RECESS_SCALE,
-  DIE_SURFACE_ROUGHNESS,
   finalDieQuaternion,
-  impactDeformation,
   launchRotationForSide,
   orientationCorrection,
-  settlingRock,
-  shadowPresentation
+  settlingRock
 } from "./RerollDice3D";
 
 const FACE_NORMAL_BY_VALUE: Record<DiceValue, Vector3> = {
@@ -25,16 +18,23 @@ const FACE_NORMAL_BY_VALUE: Record<DiceValue, Vector3> = {
 };
 
 describe("3D reroll final orientation", () => {
-  it("uses rounded glossy-plastic proportions with restrained pip depth", () => {
-    expect(DIE_RENDER_SIZE).toBeGreaterThanOrEqual(1);
-    expect(DIE_RENDER_SIZE).toBeLessThanOrEqual(1.1);
-    expect(DIE_EDGE_RADIUS / DIE_RENDER_SIZE).toBeGreaterThanOrEqual(0.18);
-    expect(DIE_EDGE_RADIUS / DIE_RENDER_SIZE).toBeLessThanOrEqual(0.22);
-    expect(DIE_SURFACE_ROUGHNESS).toBeGreaterThanOrEqual(0.14);
-    expect(DIE_SURFACE_ROUGHNESS).toBeLessThanOrEqual(0.22);
-    expect(DIE_PIP_RECESS_SCALE).toBeGreaterThanOrEqual(0.025);
-    expect(DIE_PIP_RECESS_SCALE).toBeLessThanOrEqual(0.045);
+  it("keeps resting dice square to the board and each tabletop tray", () => {
+    for (let value = 1; value <= 6; value += 1) {
+      for (const facing of [0, Math.PI / 2, Math.PI, -Math.PI / 2]) {
+        const orientation = finalDieQuaternion(value as DiceValue, 0, 0)
+          .premultiply(new Quaternion().setFromAxisAngle(new Vector3(0, 1, 0), facing));
+        for (const axis of [new Vector3(1, 0, 0), new Vector3(0, 1, 0), new Vector3(0, 0, 1)]) {
+          const direction = axis.applyQuaternion(orientation);
+          for (const component of direction.toArray()) {
+            expect(component).toBeCloseTo(Math.round(component), 8);
+          }
+        }
+        expect(FACE_NORMAL_BY_VALUE[value as DiceValue].clone().applyQuaternion(orientation).y)
+          .toBeCloseTo(1, 8);
+      }
+    }
   });
+
   it("rotates the bottom-right launch into each player perspective", () => {
     expect(launchRotationForSide("bottom")).toBe(0);
     expect(launchRotationForSide("top")).toBe(Math.PI);
@@ -57,7 +57,7 @@ describe("3D reroll final orientation", () => {
     }
   });
 
-  it("retargets the entire tumble orientation without a final face-up correction", () => {
+  it("keeps the requested initial face visible during gathering", () => {
     const baseStart = new Quaternion().setFromEuler(new Euler(1.1, -0.7, 0.45));
     const baseEnd = new Quaternion().setFromEuler(new Euler(7.3, 4.8, -5.2));
     const desiredStart = finalDieQuaternion(1, 2, 3);
@@ -67,31 +67,6 @@ describe("3D reroll final orientation", () => {
 
     expect(displayedStart.angleTo(desiredStart)).toBeCloseTo(0, 8);
     expect(displayedEnd.angleTo(desiredEnd)).toBeCloseTo(0, 8);
-  });
-
-  it("softens and expands each shadow as its die rises", () => {
-    const grounded = shadowPresentation(DIE_RENDER_SIZE / 2 + 0.01);
-    const airborne = shadowPresentation(4.7);
-
-    expect(airborne.scaleX).toBeGreaterThan(grounded.scaleX);
-    expect(airborne.scaleZ).toBeGreaterThan(grounded.scaleZ);
-    expect(airborne.opacity).toBeLessThan(grounded.opacity);
-    expect(grounded.scaleX).toBeGreaterThan(0.8);
-    expect(grounded.opacity).toBeGreaterThan(0.4);
-    expect(grounded.offsetX).toBeLessThan(0);
-    expect(grounded.offsetZ).toBeGreaterThan(0);
-    expect(Math.abs(airborne.offsetX)).toBeGreaterThan(Math.abs(grounded.offsetX));
-    expect(airborne.offsetZ).toBeGreaterThan(grounded.offsetZ);
-  });
-
-  it("adds restrained impact compression and returns to the undeformed shape", () => {
-    const impact = impactDeformation(0, 1);
-    const settled = impactDeformation(220, 1);
-
-    expect(impact.vertical).toBeGreaterThanOrEqual(0.968);
-    expect(impact.vertical).toBeLessThan(1);
-    expect(impact.horizontal).toBeGreaterThan(1);
-    expect(settled).toEqual({ horizontal: 1, vertical: 1 });
   });
 
   it("rocks only after settling and returns exactly to its final orientation", () => {

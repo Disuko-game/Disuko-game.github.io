@@ -9,7 +9,8 @@ import type {
 type RapierModule = typeof import("@dimforge/rapier3d-compat").default;
 
 export const REROLL_TUMBLE_DURATION_MS = 4600;
-export const REROLL_TUMBLE_VARIANT_COUNT = 3;
+// A variant is the complete throw seed, not an index into a small animation set.
+export const REROLL_TUMBLE_VARIANT_COUNT = 0x1_0000_0000;
 export const REROLL_MAX_DICE = 18;
 export const REROLL_SAMPLE_COMPONENTS = 7;
 export const REROLL_GATHER_DURATION_MS = 520;
@@ -20,13 +21,14 @@ const FRAME_RATE = 60;
 const FRAME_INTERVAL_SECONDS = 1 / FRAME_RATE;
 const HOLD_DURATION_SECONDS = REROLL_GATHER_DURATION_MS / 1000;
 export const REROLL_DIE_HALF_SIZE = 0.52;
-const DIE_CORE_HALF_SIZE = 0.335;
+const DIE_CORE_HALF_SIZE = 0.315;
 const DIE_BORDER_RADIUS = REROLL_DIE_HALF_SIZE - DIE_CORE_HALF_SIZE;
 export const REROLL_TRAY_HALF_EXTENT = 4.35;
 
 const SETTLED_LINEAR_SPEED = 0.12;
 const SETTLED_ANGULAR_SPEED = 0.34;
 const SETTLED_FRAME_COUNT = 10;
+const TEMPLATE_CACHE_LIMIT = 24;
 
 export type RerollImpactKind = "floor" | "wall" | "die";
 
@@ -58,6 +60,18 @@ interface SimulatedDie {
   settledFrames: number;
 }
 
+interface ThrowProfile {
+  originX: number;
+  originZ: number;
+  speed: number;
+  heading: number;
+  lift: number;
+  height: number;
+  spin: number;
+  yaw: number;
+  fan: number;
+}
+
 const templateCache = new Map<string, Promise<RerollTumbleTemplate>>();
 const openingTemplateCache = new Map<string, Promise<RerollTumbleTemplate>>();
 let rapierReady: Promise<RapierModule> | undefined;
@@ -68,19 +82,22 @@ export function rerollVariantFromKey(key: string): number {
     hash ^= key.charCodeAt(index);
     hash = Math.imul(hash, 16777619);
   }
-  return (hash >>> 0) % REROLL_TUMBLE_VARIANT_COUNT;
+  return hash >>> 0;
 }
 
 export function getRerollTumbleTemplate(count: number, variant: number): Promise<RerollTumbleTemplate> {
-  const safeCount = Math.max(1, Math.min(REROLL_MAX_DICE, Math.floor(count)));
-  const safeVariant = ((Math.floor(variant) % REROLL_TUMBLE_VARIANT_COUNT) + REROLL_TUMBLE_VARIANT_COUNT)
-    % REROLL_TUMBLE_VARIANT_COUNT;
+  const safeCount = Number.isFinite(count) ? Math.max(1, Math.min(REROLL_MAX_DICE, Math.floor(count))) : 1;
+  const safeVariant = variant >>> 0;
   const cacheKey = safeCount + ":" + safeVariant;
   const cached = templateCache.get(cacheKey);
-  if (cached) return cached;
+  if (cached) {
+    templateCache.delete(cacheKey);
+    templateCache.set(cacheKey, cached);
+    return cached;
+  }
 
   const template = ensureRapierReady().then((rapier) => createTemplate(rapier, safeCount, safeVariant));
-  templateCache.set(cacheKey, template);
+  cacheTemplate(templateCache, cacheKey, template);
   return template;
 }
 
@@ -91,20 +108,36 @@ export function getOpeningRollTumbleTemplate(
   const safePlayerIndexes = playerIndexes
     .slice(0, 4)
     .map((playerIndex) => Math.max(0, Math.min(3, Math.floor(playerIndex))));
-  const safeVariant = ((Math.floor(variant) % REROLL_TUMBLE_VARIANT_COUNT) + REROLL_TUMBLE_VARIANT_COUNT)
-    % REROLL_TUMBLE_VARIANT_COUNT;
+  const safeVariant = variant >>> 0;
   const cacheKey = `${safePlayerIndexes.join(",")}:${safeVariant}`;
   const cached = openingTemplateCache.get(cacheKey);
-  if (cached) return cached;
+  if (cached) {
+    openingTemplateCache.delete(cacheKey);
+    openingTemplateCache.set(cacheKey, cached);
+    return cached;
+  }
 
   const template = ensureRapierReady().then((rapier) => {
     return createOpeningTemplate(rapier, safePlayerIndexes, safeVariant);
   });
-  openingTemplateCache.set(cacheKey, template);
+  cacheTemplate(openingTemplateCache, cacheKey, template);
   return template;
 }
 export async function preloadRerollPhysics(): Promise<void> {
   await ensureRapierReady();
+}
+
+function cacheTemplate(
+  cache: Map<string, Promise<RerollTumbleTemplate>>,
+  key: string,
+  template: Promise<RerollTumbleTemplate>
+): void {
+  cache.set(key, template);
+  if (cache.size > TEMPLATE_CACHE_LIMIT) cache.delete(cache.keys().next().value!);
+  // Failed loads must remain retryable. An evicted promise may still be in use.
+  void template.catch(() => {
+    if (cache.get(key) === template) cache.delete(key);
+  });
 }
 
 function ensureRapierReady(): Promise<RapierModule> {
@@ -119,12 +152,8 @@ function ensureRapierReady(): Promise<RapierModule> {
 
 function createTemplate(RAPIER: RapierModule, count: number, variant: number): RerollTumbleTemplate {
   const frameCount = Math.ceil((REROLL_TUMBLE_DURATION_MS / 1000) * FRAME_RATE) + 1;
-  const tracks = Array.from({ length: count }, (): RerollTumbleTrack => ({
-    samples: new Float32Array(frameCount * REROLL_SAMPLE_COMPONENTS),
-    settleTimeMs: REROLL_TUMBLE_DURATION_MS,
-    impacts: []
-  }));
   const random = mulberry32(mixSeed(count, variant));
+  const throwProfile = createThrowProfile(random);
   const world = new RAPIER.World({ x: 0, y: -13.8, z: 0 });
   world.timestep = FRAME_INTERVAL_SECONDS;
   world.maxCcdSubsteps = 8;
@@ -132,30 +161,12 @@ function createTemplate(RAPIER: RapierModule, count: number, variant: number): R
   const surfaceKindByCollider = createTrayColliders(RAPIER, world);
   const dice = Array.from(
     { length: count },
-    (_, index) => createSimulatedDie(RAPIER, world, index, count, random)
+    (_, index) => createSimulatedDie(RAPIER, world, index, count, throwProfile, random)
   );
   const dieIndexByCollider = new Map(dice.map((die, index) => [die.colliderHandle, index]));
 
-  for (let frame = 0; frame < frameCount; frame += 1) {
-    dice.forEach((die, index) => {
-      writeSample(tracks[index].samples, frame, die.body);
-      updateSettleTime(die, tracks[index], frame);
-    });
-
-    if (frame === frameCount - 1) break;
-    if (frame * FRAME_INTERVAL_SECONDS < HOLD_DURATION_SECONDS) continue;
-    world.step(eventQueue);
-    drainImpactEvents(eventQueue, dieIndexByCollider, surfaceKindByCollider, tracks, frame + 1);
-  }
-
-  dice.forEach((die, index) => {
-    if (die.lastActiveFrame > 0) {
-      tracks[index].settleTimeMs = Math.min(
-        REROLL_TUMBLE_DURATION_MS,
-        Math.round((die.lastActiveFrame / FRAME_RATE) * 1000)
-      );
-    }
-  });
+  const tracks = simulateTracks(world, eventQueue, dice, dieIndexByCollider, surfaceKindByCollider,
+    REROLL_TUMBLE_DURATION_MS, HOLD_DURATION_SECONDS);
   eventQueue.free();
   world.free();
 
@@ -168,11 +179,6 @@ function createOpeningTemplate(
   variant: number
 ): RerollTumbleTemplate {
   const frameCount = Math.ceil((OPENING_ROLL_TUMBLE_DURATION_MS / 1000) * FRAME_RATE) + 1;
-  const tracks = playerIndexes.map((): RerollTumbleTrack => ({
-    samples: new Float32Array(frameCount * REROLL_SAMPLE_COMPONENTS),
-    settleTimeMs: OPENING_ROLL_TUMBLE_DURATION_MS,
-    impacts: []
-  }));
   const random = mulberry32(mixOpeningSeed(playerIndexes, variant));
   const world = new RAPIER.World({ x: 0, y: -13.8, z: 0 });
   world.timestep = FRAME_INTERVAL_SECONDS;
@@ -185,26 +191,8 @@ function createOpeningTemplate(
   const dieIndexByCollider = new Map(dice.map((die, index) => [die.colliderHandle, index]));
   const holdDurationSeconds = OPENING_ROLL_GATHER_DURATION_MS / 1000;
 
-  for (let frame = 0; frame < frameCount; frame += 1) {
-    dice.forEach((die, index) => {
-      writeSample(tracks[index].samples, frame, die.body);
-      updateSettleTime(die, tracks[index], frame, holdDurationSeconds);
-    });
-
-    if (frame === frameCount - 1) break;
-    if (frame * FRAME_INTERVAL_SECONDS < holdDurationSeconds) continue;
-    world.step(eventQueue);
-    drainImpactEvents(eventQueue, dieIndexByCollider, surfaceKindByCollider, tracks, frame + 1);
-  }
-
-  dice.forEach((die, index) => {
-    if (die.lastActiveFrame > 0) {
-      tracks[index].settleTimeMs = Math.min(
-        OPENING_ROLL_TUMBLE_DURATION_MS,
-        Math.round((die.lastActiveFrame / FRAME_RATE) * 1000)
-      );
-    }
-  });
+  const tracks = simulateTracks(world, eventQueue, dice, dieIndexByCollider, surfaceKindByCollider,
+    OPENING_ROLL_TUMBLE_DURATION_MS, holdDurationSeconds);
   eventQueue.free();
   world.free();
 
@@ -216,6 +204,92 @@ function createOpeningTemplate(
     frameCount,
     tracks
   };
+}
+
+function simulateTracks(
+  world: World,
+  eventQueue: EventQueue,
+  dice: SimulatedDie[],
+  dieIndexByCollider: Map<number, number>,
+  surfaceKindByCollider: Map<number, RerollImpactKind>,
+  durationMs: number,
+  holdDurationSeconds: number
+): RerollTumbleTrack[] {
+  const frameCount = Math.ceil(durationMs / 1000 * FRAME_RATE) + 1;
+  // Most rolls finish in the regular window. Give a collapsing stack time to
+  // finish physically, then gently accelerate its late tail for playback.
+  const maxFrameCount = frameCount + FRAME_RATE * 6;
+  const tracks = dice.map((): RerollTumbleTrack => ({
+    samples: new Float32Array(maxFrameCount * REROLL_SAMPLE_COMPONENTS),
+    settleTimeMs: durationMs,
+    impacts: []
+  }));
+  let lastFrame = 0;
+  for (let frame = 0; frame < maxFrameCount; frame += 1) {
+    lastFrame = frame;
+    dice.forEach((die, index) => {
+      writeSample(tracks[index].samples, frame, die.body);
+      updateSettleTime(die, tracks[index], frame, holdDurationSeconds);
+    });
+    if (frame / FRAME_RATE >= holdDurationSeconds + 1.6
+      && dice.every((die) => die.settledFrames >= SETTLED_FRAME_COUNT)) break;
+    if (frame === maxFrameCount - 1) break;
+    if (frame * FRAME_INTERVAL_SECONDS < holdDurationSeconds) continue;
+    dice.forEach((die) => applySurfaceDrag(world, die, frame / FRAME_RATE - holdDurationSeconds));
+    world.step(eventQueue);
+    drainImpactEvents(eventQueue, dieIndexByCollider, surfaceKindByCollider, tracks, frame + 1);
+  }
+  const finalHoldFrames = 12;
+  const playbackEnd = frameCount - 1 - finalHoldFrames;
+  const preserveUntil = (holdDurationSeconds + 1.35) * FRAME_RATE;
+  const tailScale = Math.max(0, (lastFrame - playbackEnd) / (playbackEnd - preserveUntil));
+  const sourceFrameAt = (frame: number) => {
+    const tail = Math.max(0, Math.min(frame, playbackEnd) - preserveUntil);
+    return Math.min(lastFrame, frame + tailScale * tail * tail / (playbackEnd - preserveUntil));
+  };
+  return tracks.map((track, index) => {
+    const samples = new Float32Array(frameCount * REROLL_SAMPLE_COMPONENTS);
+    for (let frame = 0; frame < frameCount; frame += 1) {
+      interpolateSample(track.samples, samples, frame, sourceFrameAt(frame));
+    }
+    const toPlaybackMs = (timeMs: number) => {
+      const sourceFrame = timeMs / 1000 * FRAME_RATE;
+      let low = 0;
+      let high = frameCount - 1;
+      for (let step = 0; step < 16; step += 1) {
+        const middle = (low + high) / 2;
+        if (sourceFrameAt(middle) < sourceFrame) low = middle;
+        else high = middle;
+      }
+      return Math.round(high / FRAME_RATE * 1000);
+    };
+    return {
+      samples,
+      settleTimeMs: toPlaybackMs(dice[index].lastActiveFrame / FRAME_RATE * 1000),
+      impacts: track.impacts.map((impact) => ({ ...impact, timeMs: toPlaybackMs(impact.timeMs) }))
+    };
+  });
+}
+
+function interpolateSample(source: Float32Array, target: Float32Array, frame: number, sourceFrame: number): void {
+  const lower = Math.floor(sourceFrame) * REROLL_SAMPLE_COMPONENTS;
+  const upper = Math.ceil(sourceFrame) * REROLL_SAMPLE_COMPONENTS;
+  const fraction = sourceFrame - Math.floor(sourceFrame);
+  const offset = frame * REROLL_SAMPLE_COMPONENTS;
+  for (let axis = 0; axis < 3; axis += 1) {
+    target[offset + axis] = source[lower + axis] + (source[upper + axis] - source[lower + axis]) * fraction;
+  }
+  let dot = 0;
+  for (let axis = 3; axis < 7; axis += 1) dot += source[lower + axis] * source[upper + axis];
+  const sign = dot < 0 ? -1 : 1;
+  let norm = 0;
+  for (let axis = 3; axis < 7; axis += 1) {
+    const value = source[lower + axis] + (source[upper + axis] * sign - source[lower + axis]) * fraction;
+    target[offset + axis] = value;
+    norm += value * value;
+  }
+  const length = Math.sqrt(norm);
+  for (let axis = 3; axis < 7; axis += 1) target[offset + axis] /= length;
 }
 function createTrayColliders(RAPIER: RapierModule, world: World): Map<number, RerollImpactKind> {
   const surfaceKindByCollider = new Map<number, RerollImpactKind>();
@@ -242,36 +316,40 @@ function createSimulatedDie(
   world: World,
   index: number,
   count: number,
+  profile: ThrowProfile,
   random: () => number
 ): SimulatedDie {
-  const columns = Math.min(5, Math.ceil(Math.sqrt(count)));
+  // Two loose layers keep a large handful within the same corner without
+  // spawning overlapping bodies and letting the collision solver explode them.
+  const columns = Math.min(3, Math.ceil(Math.sqrt(count)));
   const column = index % columns;
-  const row = Math.floor(index / columns);
-  const spacing = 0.58;
-  const x = 3.62 - column * spacing;
-  const z = 3.6 - row * spacing;
-  const initialRotation = randomQuaternion(random);
-  const spread = count === 1 ? 0.5 : index / (count - 1);
-  const speedScale = 0.72 + random() * 0.52;
-  const horizontalThrow = (3.8 + (1 - spread) * 8.8 + random() * 2.1) * speedScale;
-  const depthThrow = (3.8 + spread * 8.8 + random() * 2.1) * (0.7 + random() * 0.56);
-  const launchHeight = 1.15 + (index % 3) * 0.16 + random() * 0.48;
+  const rows = Math.min(3, Math.ceil(count / columns));
+  const row = Math.floor(index / columns) % rows;
+  const layer = Math.floor(index / (columns * rows));
+  const spacing = 1.2;
+  const x = profile.originX - column * spacing + (random() - 0.5) * 0.05;
+  const z = profile.originZ - row * spacing + (random() - 0.5) * 0.05;
+  const yaw = profile.yaw + Math.floor(random() * 4) * Math.PI / 2;
+  const initialRotation = { x: 0, y: Math.sin(yaw / 2), z: 0, w: Math.cos(yaw / 2) };
+  const heading = profile.heading + (random() - 0.5) * profile.fan;
+  const speed = profile.speed * (0.74 + random() * 0.48);
+  const launchHeight = profile.height + layer * spacing + random() * 0.08;
   const body = world.createRigidBody(
     RAPIER.RigidBodyDesc.dynamic()
       .setTranslation(x, launchHeight, z)
       .setRotation(initialRotation)
       .setLinvel(
-        -horizontalThrow,
-        4 + spread * 0.9 + random() * 0.9,
-        -depthThrow
+        -Math.cos(heading) * speed,
+        profile.lift * (0.82 + random() * 0.34),
+        -Math.sin(heading) * speed
       )
       .setAngvel({
-        x: (random() - 0.5) * 20,
-        y: (random() - 0.5) * 24,
-        z: (random() - 0.5) * 22
+        x: (0.35 + random() * 0.8) * profile.spin,
+        y: (random() - 0.5) * profile.spin * 1.4,
+        z: -(0.35 + random() * 0.8) * profile.spin
       })
-      .setLinearDamping(0.15 + spread * 0.035)
-      .setAngularDamping(0.32 + spread * 0.065)
+      .setLinearDamping(0.17)
+      .setAngularDamping(0.38)
       .setCanSleep(true)
       .setCcdEnabled(true)
       .setAdditionalSolverIterations(8)
@@ -284,8 +362,8 @@ function createSimulatedDie(
       DIE_BORDER_RADIUS
     )
       .setDensity(1.08)
-      .setFriction(0.48)
-      .setRestitution(0.34)
+      .setFriction(0.56)
+      .setRestitution(0.43)
       .setFrictionCombineRule(RAPIER.CoefficientCombineRule.Average)
       .setRestitutionCombineRule(RAPIER.CoefficientCombineRule.Average)
       .setActiveEvents(RAPIER.ActiveEvents.CONTACT_FORCE_EVENTS)
@@ -309,17 +387,19 @@ function createOpeningDie(
     { x: -3.62, z: 3.62 }
   ];
   const corner = corners[playerIndex] ?? corners[rollIndex % corners.length];
-  const targetX = (random() - 0.5) * 1.25;
-  const targetZ = (random() - 0.5) * 1.25;
-  const travelScale = 2.05 + random() * 0.28;
+  const originX = corner.x - Math.sign(corner.x) * (0.1 + random() * 0.45);
+  const originZ = corner.z - Math.sign(corner.z) * (0.1 + random() * 0.45);
+  const targetX = (random() - 0.5) * 2.1;
+  const targetZ = (random() - 0.5) * 2.1;
+  const travelScale = 1.9 + random() * 0.8;
   const body = world.createRigidBody(
     RAPIER.RigidBodyDesc.dynamic()
-      .setTranslation(corner.x, 1.35 + random() * 0.42, corner.z)
+      .setTranslation(originX, 1.05 + random() * 0.5, originZ)
       .setRotation(randomQuaternion(random))
       .setLinvel(
-        (targetX - corner.x) * travelScale,
-        3.8 + random() * 1.25,
-        (targetZ - corner.z) * travelScale
+        (targetX - originX) * travelScale,
+        2.8 + random() * 1.8,
+        (targetZ - originZ) * travelScale
       )
       .setAngvel({
         x: (random() - 0.5) * 24,
@@ -340,7 +420,7 @@ function createOpeningDie(
       DIE_BORDER_RADIUS
     )
       .setDensity(1.08)
-      .setFriction(0.48)
+      .setFriction(0.56)
       .setRestitution(0.38)
       .setFrictionCombineRule(RAPIER.CoefficientCombineRule.Average)
       .setRestitutionCombineRule(RAPIER.CoefficientCombineRule.Average)
@@ -349,6 +429,31 @@ function createOpeningDie(
     body
   );
   return { body, colliderHandle: collider.handle, lastActiveFrame: 0, settledFrames: 0 };
+}
+function createThrowProfile(random: () => number): ThrowProfile {
+  return {
+    originX: 3.32 + random() * 0.25,
+    originZ: 3.32 + random() * 0.25,
+    speed: 10.5 + random() * 3.7,
+    heading: Math.PI / 4 + (random() - 0.5) * 0.3,
+    lift: 2.7 + random() * 1.35,
+    height: 0.88 + random() * 0.26,
+    spin: 8 + random() * 7,
+    yaw: (random() - 0.5) * 0.2,
+    fan: 0.65 + random() * 0.45
+  };
+}
+
+function applySurfaceDrag(world: World, die: SimulatedDie, elapsedSeconds: number): void {
+  // Approximate rolling resistance after the energetic part of the throw.
+  // Airborne dice retain their arc; contact friction damps the final rocking.
+  let touchingSurface = false;
+  world.contactPairsWith(world.getCollider(die.colliderHandle), () => { touchingSurface = true; });
+  const resistance = touchingSurface
+    ? Math.max(0, Math.min(1, (elapsedSeconds - 1.25) / 0.9))
+    : 0;
+  die.body.setLinearDamping(0.17 + resistance * 2.2);
+  die.body.setAngularDamping(0.38 + resistance * 4.4);
 }
 function drainImpactEvents(
   eventQueue: EventQueue,

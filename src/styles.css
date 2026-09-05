@@ -1116,7 +1116,8 @@ p {
   box-shadow: -0.12rem 0.14rem 0.2rem #35150666;
   font-weight: 900;
 }
-.reroll-3d-fallback {
+.reroll-3d-fallback,
+.reroll-3d-emergency-fallback {
   position: absolute;
   inset: 0;
   z-index: 1;
@@ -1129,7 +1130,8 @@ p {
   padding: 0.5rem;
 }
 
-.reroll-3d-fallback span {
+.reroll-3d-fallback span,
+.reroll-3d-emergency-fallback span {
   display: grid;
   width: 2.3rem;
   aspect-ratio: 1;
@@ -1335,15 +1337,10 @@ p {
 
 .dice-rail-groove {
   --rail-gap: clamp(0.08rem, 1vw, 0.26rem);
-  --rail-slot-max: var(--compact-die-size, 2.55rem);
-  --rail-slot-size: min(
-    var(--rail-slot-max),
-    calc((100% - var(--rail-gap-count, 0) * var(--rail-gap)) / var(--rail-group-count, 1))
-  );
   display: grid;
-  grid-template-columns: repeat(var(--rail-group-count, 1), minmax(0, var(--rail-slot-size)));
+  grid-template-columns: repeat(var(--rail-group-count, 1), minmax(0, 1fr));
   align-items: center;
-  justify-content: end;
+  justify-content: stretch;
   justify-items: stretch;
   gap: var(--rail-gap);
   width: min(100%, 17.6rem);
@@ -1369,7 +1366,6 @@ p {
 
 .opponent-dice-rail {
   --rail-gap: var(--opponent-rail-gap, clamp(0.08rem, 0.8vw, 0.16rem));
-  --rail-slot-max: var(--opponent-die-max, 2.65rem);
   --opponent-die-gap: var(--opponent-rail-gap, clamp(0.1rem, 0.9vw, 0.22rem));
   --opponent-die-size: clamp(1.7rem, calc(16.666% - var(--opponent-die-gap)), var(--opponent-die-max, 2.65rem));
   min-height: var(--opponent-rail-min-height, clamp(2.55rem, 10vw, 3.2rem));
@@ -1592,6 +1588,11 @@ p {
   gap: clamp(0.2rem, 1vw, 0.36rem);
 }
 
+.game-shell.has-compact-trays .dice-rail-groove {
+  --compact-die-size: 2.4rem;
+  --opponent-die-max: 2.4rem;
+}
+
 .game-shell.has-compact-trays .opponent-tray-row strong {
   font-size: clamp(0.78rem, 2.55vw, 0.94rem);
 }
@@ -1763,7 +1764,7 @@ p {
 .winner-celebration {
   position: fixed;
   inset: 0;
-  z-index: 24;
+  z-index: 90;
   display: grid;
   place-items: center;
   overflow: hidden;
@@ -2110,7 +2111,7 @@ p {
 }
 
 .tabletop-tray-slot .dice-rail-groove {
-  justify-content: end;
+  justify-content: stretch;
   gap: clamp(0.28rem, 0.8vw, 0.48rem);
   min-height: clamp(3.65rem, 6.2vw, 4.05rem);
   overflow: hidden;
@@ -3412,6 +3413,36 @@ select:focus-visible {
   box-shadow: none;
 }
 
+.reroll-3d-emergency-fallback {
+  display: none;
+}
+
+.dice-3d-unavailable .live-dice-3d-canvas,
+.dice-3d-unavailable .live-dice-badge-layer {
+  display: none;
+}
+
+.dice-3d-unavailable .reroll-3d-emergency-fallback {
+  display: flex;
+}
+
+.dice-3d-unavailable .reroll-3d-loading-die-fallback {
+  color: #fff8df;
+  background: var(--fallback-die-color);
+  box-shadow: -0.12rem 0.14rem 0.2rem #35150666;
+}
+
+:root.dice-3d-unavailable .die-face[data-live-die-3d="true"] .die-face-depth,
+:root.dice-3d-unavailable .die-face[data-live-die-3d="true"] .die-face-surface,
+:root.dice-3d-unavailable .die-face[data-live-die-3d="true"] > .die-multiplier,
+:root.dice-3d-unavailable .die-face[data-live-die-3d="true"] > .die-lock-icon {
+  opacity: 1;
+}
+
+:root.dice-3d-unavailable .board-grid > .completion-bonus-pop {
+  opacity: 1 !important;
+}
+
 .die-face.is-selected,
 .die-face.is-conflicted,
 .die-face.is-recent-move,
@@ -3558,12 +3589,12 @@ select:focus-visible {
 
 .opponent-dice-rail,
 .dice-rail-groove {
-  border: 0.2rem solid color-mix(in srgb, var(--rail-accent, var(--tray-player-color)), #9b5629 52%);
+  border: 0.2rem solid color-mix(in srgb, var(--rail-accent, var(--tray-player-color)), #5b3420 72%);
   border-radius: 0.86rem;
-  background-color: #d7a969;
+  background-color: #201710;
   background-image:
-    linear-gradient(rgba(255, 247, 218, 0.2), rgba(104, 53, 18, 0.12)),
-    url("/textures/pale-maple-board.png");
+    linear-gradient(rgba(10, 7, 4, 0.3), rgba(28, 18, 10, 0.12)),
+    url("/textures/dark-tray-well.png");
   background-position: center;
   background-size: cover, 18rem auto;
   box-shadow:
@@ -3583,27 +3614,21 @@ select:focus-visible {
 .rail-value-slot {
   box-sizing: border-box;
   min-height: 2.8rem;
-  border: 0.07rem solid rgba(113, 68, 37, 0.65);
+  border: 0.07rem solid rgba(8, 6, 4, 0.9);
   border-radius: 0.58rem;
-  background-color: #2c160c;
-  background-image: url("/textures/dark-tray-well.png");
-  background-position: center;
-  background-size: 8rem auto;
-  box-shadow:
-    inset 0.18rem 0.2rem 0.32rem rgba(0, 0, 0, 0.62),
-    inset -0.1rem -0.1rem 0.2rem rgba(223, 161, 101, 0.1),
-    0 0.05rem 0 rgba(255, 222, 170, 0.11);
-}
-.rail-value-slot.is-empty-value {
-  background-color: #d5a465;
+  background-color: #211911;
   background-image:
-    linear-gradient(rgba(255, 244, 207, 0.12), rgba(104, 53, 18, 0.08)),
-    url("/textures/pale-maple-board.png");
+    linear-gradient(rgba(13, 11, 8, 0.42), rgba(26, 22, 17, 0.24)),
+    url("/textures/dark-tray-well.png");
+  background-position: center;
   background-size: cover, 8rem auto;
   box-shadow:
-    inset 0.12rem 0.14rem 0.22rem rgba(82, 40, 13, 0.28),
-    inset -0.08rem -0.08rem 0.16rem rgba(255, 232, 187, 0.3),
-    0 0.05rem 0 rgba(255, 222, 170, 0.16);
+    inset 0.14rem 0.18rem 0.25rem rgba(0, 0, 0, 0.7),
+    inset -0.05rem -0.06rem 0.12rem rgba(221, 195, 148, 0.12),
+    0 1px 0 rgba(221, 195, 148, 0.14);
+}
+.rail-value-slot.is-empty-value {
+  background-color: #211911;
 }
 
 .opponent-dice-rail {
@@ -3658,13 +3683,13 @@ select:focus-visible {
 }
 
 .live-dice-3d-canvas {
-  z-index: 76;
+  z-index: 86;
 }
 
 .live-dice-badge-layer {
   position: fixed;
   inset: 0;
-  z-index: 79;
+  z-index: 87;
   overflow: visible;
   pointer-events: none;
 }
@@ -3806,27 +3831,21 @@ select:focus-visible {
 }
 
 /*
- * Keep permanent board markings out of the button-border compositing path.
- * Mobile Safari can drop fractional child borders when this raised board is
- * promoted to a 3D layer. These whole-pixel strokes paint as one flat layer.
+ * Paint the complete grid in a single SVG, including the 2-column / 3-row
+ * divisions. Fractional repeating-background tiles and per-cell borders can
+ * disappear or disagree at their seams in Safari. Explicit paths share the
+ * same viewBox as the six equal grid tracks; non-scaling strokes retain a
+ * readable CSS-pixel thickness on narrow screens and when the board resizes.
  */
 .board-grid::after {
   position: absolute;
   z-index: 3;
   inset: 0;
   border-radius: inherit;
-  background-image:
-    linear-gradient(to right, rgba(91, 48, 19, 0.9) 0 3px, transparent 3px),
-    linear-gradient(to bottom, rgba(91, 48, 19, 0.9) 0 3px, transparent 3px),
-    linear-gradient(to right, rgba(105, 62, 28, 0.68) 0 1px, transparent 1px),
-    linear-gradient(to bottom, rgba(105, 62, 28, 0.68) 0 1px, transparent 1px);
-  background-position: 0 0;
-  background-repeat: repeat-x, repeat-y, repeat-x, repeat-y;
-  background-size:
-    33.333333% 100%,
-    100% 50%,
-    16.666667% 100%,
-    100% 16.666667%;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='600' height='600' viewBox='0 0 600 600' preserveAspectRatio='none'%3E%3Cpath d='M100 0V600M300 0V600M500 0V600M0 100H600M0 200H600M0 400H600M0 500H600' fill='none' stroke='%23693e1c' stroke-opacity='.8' stroke-width='1.5' vector-effect='non-scaling-stroke'/%3E%3Cpath d='M200 0V600M400 0V600M0 300H600' fill='none' stroke='%235b3013' stroke-width='3' vector-effect='non-scaling-stroke'/%3E%3C/svg%3E");
+  background-position: center;
+  background-repeat: no-repeat;
+  background-size: 100% 100%;
   box-shadow: inset 0 0 0 2px rgba(91, 48, 19, 0.9);
   content: "";
   pointer-events: none;
@@ -3834,6 +3853,7 @@ select:focus-visible {
 
 .board-grid > .board-cell {
   border: 0;
+  box-shadow: none;
 }
 
 /* Let die badges escape the slot and render above the body-level live dice canvas. */
@@ -3845,10 +3865,10 @@ select:focus-visible {
 .rail-value-slot.is-empty-value {
   border: 0;
   box-shadow:
-    inset 0 0 0 1px rgba(105, 61, 29, 0.78),
-    inset 0.12rem 0.14rem 0.22rem rgba(82, 40, 13, 0.34),
-    inset -0.08rem -0.08rem 0.16rem rgba(255, 232, 187, 0.34),
-    0 0.05rem 0 rgba(255, 222, 170, 0.2);
+    inset 0 0 0 1px rgba(6, 4, 2, 0.88),
+    inset 0.16rem 0.2rem 0.28rem rgba(0, 0, 0, 0.76),
+    inset -0.05rem -0.06rem 0.12rem rgba(221, 195, 148, 0.12),
+    0 1px 0 rgba(221, 195, 148, 0.14);
 }
 
 .rail-value-slot.is-empty-value .die-face.is-placeholder {
@@ -3870,10 +3890,10 @@ select:focus-visible {
 .rail-value-slot.is-empty-value .die-face.is-placeholder .pip {
   min-width: 3px;
   min-height: 3px;
-  background: rgba(82, 44, 19, 0.68);
+  background: rgba(219, 197, 154, 0.48);
   box-shadow:
-    inset 0.045rem 0.055rem 0.065rem rgba(40, 17, 5, 0.82),
-    0.035rem 0.04rem 0 rgba(255, 239, 200, 0.42);
+    inset 0.035rem 0.04rem 0.055rem rgba(0, 0, 0, 0.72),
+    0 0.025rem 0 rgba(255, 232, 193, 0.14);
 }
 
 .dice-rail-groove,
@@ -3910,6 +3930,131 @@ select:focus-visible {
   bottom: -0.58rem;
   height: 0.72rem;
 }
+
+/* The shared gameplay scene supplies elevation, lighting and cast shadows.
+ * Keep its DOM hit targets and textured top surfaces in a flat paint layer;
+ * independently tilted CSS aprons would disagree with the scene camera. */
+.live-dice-3d-ready .board-wrap,
+.live-dice-3d-ready .board-grid,
+.live-dice-3d-ready .dice-rail-groove,
+.live-dice-3d-ready .opponent-dice-rail,
+.live-dice-3d-ready .floating-reroll-tray {
+  transform-style: flat;
+}
+
+.live-dice-3d-ready .board-wrap::before,
+.live-dice-3d-ready .dice-rail-groove::before,
+.live-dice-3d-ready .opponent-dice-rail::before,
+.live-dice-3d-ready .floating-reroll-tray::before {
+  display: none;
+}
+
+.live-dice-3d-ready .game-shell .board-wrap {
+  border-width: 0.52rem;
+  box-shadow:
+    inset 0 0 0 0.12rem rgba(92, 45, 14, 0.3),
+    inset 0 0 0.25rem rgba(255, 241, 203, 0.24),
+    0 0 0 0.16rem var(--active-player-color),
+    0 0 0.6rem color-mix(in srgb, var(--active-player-color), transparent 60%);
+}
+
+.live-dice-3d-ready .dice-rail-groove,
+.live-dice-3d-ready .opponent-dice-rail {
+  border-width: 0.22rem;
+  border-color: color-mix(in srgb, var(--rail-accent, var(--tray-player-color)), #5b3420 72%);
+  box-shadow:
+    inset 0 0 0 1px rgba(7, 5, 3, 0.66),
+    inset 0 0 0.18rem rgba(0, 0, 0, 0.24);
+}
+
+.live-dice-3d-ready .dice-tray.is-active-player .dice-rail-groove,
+.live-dice-3d-ready .opponent-tray-row.is-active-player .opponent-dice-rail {
+  border-color: color-mix(in srgb, var(--rail-accent, var(--tray-player-color)), #5b3420 55%);
+  box-shadow:
+    inset 0 0 0 1px rgba(7, 5, 3, 0.66),
+    inset 0 0 0.18rem rgba(0, 0, 0, 0.24),
+    0 0 0 1px color-mix(in srgb, var(--rail-accent, var(--tray-player-color)), transparent 28%);
+}
+
+.live-dice-3d-ready .tabletop-tray-slot.is-active .dice-tray {
+  filter: none;
+}
+
+.live-dice-3d-ready .floating-reroll-tray {
+  border-width: 0.5rem;
+  box-shadow:
+    inset 0 0 0 0.12rem rgba(97, 50, 18, 0.35),
+    inset 0 0 0.3rem rgba(255, 237, 196, 0.2);
+}
+
+.live-dice-3d-ready .drag-preview,
+.live-dice-3d-ready .bot-drag-preview,
+.live-dice-3d-ready .invalid-return-preview .die-face {
+  filter: none;
+}
+
+.live-dice-3d-ready .die-face[data-live-die-3d="true"] {
+  transform: none;
+  transform-style: flat;
+}
+
+/* Full-size playing pieces and light maple tops surrounding dark walnut wells. */
+.live-dice-3d-ready .board-cell > .die-face[data-live-die-3d="true"] {
+  width: 84%;
+  max-width: none;
+}
+.live-dice-3d-ready .dice-rail-groove .rail-die {
+  padding: 0;
+}
+.live-dice-3d-ready .dice-rail-groove .die-face.is-compact {
+  width: 94%;
+  max-width: none;
+}
+.live-dice-3d-ready .dice-rail-groove {
+  border-radius: 1.35rem;
+  background-color: #efca8b;
+  background-image: url("/textures/pale-maple-board.png");
+  background-size: 18rem auto;
+}
+.live-dice-3d-ready .rail-value-slot {
+  border-radius: 0.72rem;
+  background-image: url("/textures/dark-walnut-table.png");
+  background-size: 9rem auto;
+}
+.live-dice-3d-ready .game-shell .board-wrap {
+  box-shadow: inset 0 0 0 0.12rem rgba(92,45,14,.3),
+    0 0 0 2px color-mix(in srgb, var(--active-player-color), white 35%),
+    0 0 10px 3px var(--active-player-color),
+    0 7px 26px 7px color-mix(in srgb, var(--active-player-color), transparent 30%);
+}
+.live-dice-3d-ready .dice-tray.is-active-player .dice-rail-groove,
+.live-dice-3d-ready .opponent-tray-row.is-active-player .opponent-dice-rail,
+.live-dice-3d-ready .tabletop-tray-slot.is-active .dice-rail-groove {
+  box-shadow: inset 0 0 0 1px rgba(70,35,12,.4),
+    0 0 0 2px color-mix(in srgb, var(--rail-accent, var(--tray-player-color)), white 35%),
+    0 0 9px 3px var(--rail-accent, var(--tray-player-color)),
+    0 6px 22px 5px color-mix(in srgb, var(--rail-accent, var(--tray-player-color)), transparent 28%);
+}
+
+.live-dice-3d-ready .die-face[data-live-die-3d="true"].is-selected {
+  transform: translateY(-0.12rem) scale(1.02);
+}
+
+.live-dice-3d-ready .board-cell > .die-face[data-live-die-3d="true"].is-landing {
+  animation-name: liveDieLand;
+}
+
+@keyframes liveDieLand {
+  from {
+    opacity: 0;
+    transform: translateY(-0.7rem) scale(0.72) rotate(-7deg);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1) rotate(0);
+  }
+}
+
 /* App-wide walnut table with raised maple menu trays and walnut controls. */
 :root,
 html,

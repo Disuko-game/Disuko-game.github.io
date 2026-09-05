@@ -15,3 +15,5 @@ supabase/.temp/
 dist-botlab/
 __pycache__/
 *.pyc
+/.tools/
+*.blend1

@@ -1,0 +1,27 @@
+{
+  "blender": "4.5.13 LTS",
+  "glb": "public/models/die.glb",
+  "sha256": "ecc773e38e5fe1db3eaff04b979e507ba5841cb79b6c588a45ee5663bfe793c1",
+  "size": [
+    1.0399999618530273,
+    1.0399999618530273,
+    1.0399999618530273
+  ],
+  "triangles": 14270,
+  "vertices": 7137,
+  "edgeBevel": 0.205,
+  "bodyRoughness": 0.22,
+  "pipCavities": 21,
+  "materials": [
+    "DieBody",
+    "DiePips"
+  ],
+  "faceValues": {
+    "+X": 3,
+    "-X": 4,
+    "+Y": 1,
+    "-Y": 6,
+    "+Z": 2,
+    "-Z": 5
+  }
+}

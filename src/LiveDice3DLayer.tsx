@@ -1,22 +1,17 @@
 import { useEffect, type ReactElement } from "react";
 import * as THREE from "three";
-import { RoomEnvironment } from "three/examples/jsm/environments/RoomEnvironment.js";
 import type { DiceValue, PlayerColor } from "./game/types";
-import {
-  DIE_FLOOR_CENTER_Y,
-  createDieFaceResources,
-  createDieGeometry,
-  createShadowTexture,
-  finalDieQuaternion,
-  shadowPresentation
-} from "./RerollDice3D";
+import { DIE_FLOOR_CENTER_Y, finalDieQuaternion } from "./RerollDice3D";
 import { playerColorForOwner } from "./StaticDie3D";
+import { createDiePalette, loadDieAsset } from "./dieAsset";
+import { liveRolls, rollScreenPosition, TABLE_CAMERA_COS, TABLE_CAMERA_SIN, TABLE_CAMERA_TILT } from "./diceSceneBridge";
+import { createContactTexture, createTableLighting } from "./tableLighting";
+import {
+  BOARD_SURFACE_Y, TABLE_SURFACE_Y, TRAY_SURFACE_Y,
+  createTableSurfaceFactory, type TableSurface, type TableSurfaceKind
+} from "./tableSurfaces";
 
 const LIVE_DIE_SELECTOR = '[data-live-die-3d="true"]';
-const RESTING_TARGET_FPS = 30;
-const MOVING_TARGET_FPS = 60;
-const BASE_CAMERA_ZOOM = 6.25;
-const BASE_REGION_SCALE = 1.9;
 
 function animationProgress(element: Element): number | null {
   const animation = element.getAnimations()[0];
@@ -53,197 +48,202 @@ export function liveDieValue(element: HTMLElement): DiceValue | null {
   return value >= 1 && value <= 6 && Number.isInteger(value) ? value as DiceValue : null;
 }
 
+
+
+interface VisibleDie {
+  mesh: THREE.Group;
+  contact: THREE.Mesh<THREE.PlaneGeometry, THREE.MeshBasicMaterial>;
+  color: PlayerColor;
+}
+
 export default function LiveDice3DLayer({ onReady }: { onReady: () => void }): ReactElement | null {
   useEffect(() => {
-    let renderer: THREE.WebGLRenderer;
-    try {
-      renderer = new THREE.WebGLRenderer({ alpha: true, antialias: true, powerPreference: "high-performance" });
-    } catch {
-      return;
-    }
+    let disposed = false;
+    let cleanup: (() => void) | undefined;
+    void loadDieAsset().then(asset => {
+      if (disposed) return;
+      const renderer = new THREE.WebGLRenderer({ alpha: true, antialias: true, powerPreference: "high-performance" });
+      renderer.setClearColor(0x000000, 0);
+      renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+      renderer.domElement.className = "live-dice-3d-canvas";
+      renderer.domElement.setAttribute("aria-hidden", "true");
+      document.body.appendChild(renderer.domElement);
+      const scene = new THREE.Scene();
+      const lighting = createTableLighting(scene, renderer);
+      const camera = new THREE.OrthographicCamera(-10, 10, 10, -10, 0.1, 200);
+      camera.position.set(0, Math.cos(TABLE_CAMERA_TILT) * 80, Math.sin(TABLE_CAMERA_TILT) * 80);
+      camera.lookAt(0, 0, 0);
+      const palette = createDiePalette(asset);
+      const contactTexture = createContactTexture();
+      const contactGeometry = new THREE.PlaneGeometry(1, 1);
+      const instances = new Map<HTMLElement | object, VisibleDie>();
+      const shadowMaterial = new THREE.ShadowMaterial({ color: 0x30251b, opacity: 0.36, depthWrite: true });
+      const surfaceFactory = createTableSurfaceFactory(renderer);
+      const surfaces = new Map<Element, TableSurface>();
+      const table = new THREE.Mesh(new THREE.PlaneGeometry(1, 1), shadowMaterial);
+      table.rotation.x = -Math.PI / 2;
+      table.receiveShadow = true;
+      scene.add(table);
 
-    renderer.setClearColor(0x000000, 0);
-    renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 1.5));
-    renderer.outputColorSpace = THREE.SRGBColorSpace;
-    renderer.toneMapping = THREE.ACESFilmicToneMapping;
-    renderer.toneMappingExposure = 0.82;
-    renderer.autoClear = false;
-    renderer.domElement.className = "live-dice-3d-canvas";
-    renderer.domElement.setAttribute("aria-hidden", "true");
-    document.body.appendChild(renderer.domElement);
+      const badgeLayer = document.createElement("div");
+      badgeLayer.className = "live-dice-badge-layer";
+      badgeLayer.setAttribute("aria-hidden", "true");
+      document.body.appendChild(badgeLayer);
+      document.documentElement.classList.add("live-dice-3d-overlay-ready");
+      const badgeOverlays = new Map<HTMLElement, HTMLElement>();
+      const lockOverlays = new Map<HTMLElement, HTMLElement>();
+      const messageOverlays = new Map<HTMLElement, HTMLElement>();
+      let width = 0, height = 0, pixelsPerUnit = 32, frame = 0, lastTime = 0;
+      let ready = false, lastShadowSignature = "";
+      const worldPosition = (x: number, y: number, elevation: number, out: THREE.Vector3) =>
+        out.set((x - width / 2) / pixelsPerUnit, elevation,
+          ((y - height / 2) / pixelsPerUnit + elevation * TABLE_CAMERA_SIN) / TABLE_CAMERA_COS);
 
-    const badgeLayer = document.createElement("div");
-    badgeLayer.className = "live-dice-badge-layer";
-    badgeLayer.setAttribute("aria-hidden", "true");
-    document.body.appendChild(badgeLayer);
-    document.documentElement.classList.add("live-dice-3d-overlay-ready");
-    const badgeOverlays = new Map<HTMLElement, HTMLElement>();
-    const lockOverlays = new Map<HTMLElement, HTMLElement>();
-    const messageOverlays = new Map<HTMLElement, HTMLElement>();
-
-    const scene = new THREE.Scene();
-    const roomEnvironment = new RoomEnvironment();
-    const pmremGenerator = new THREE.PMREMGenerator(renderer);
-    const environmentTarget = pmremGenerator.fromScene(roomEnvironment, 0.03);
-    scene.environment = environmentTarget.texture;
-    scene.environmentIntensity = 0.11;
-
-    const camera = new THREE.PerspectiveCamera(42, 1, 0.1, 45);
-    camera.position.set(0, 14.8, 3.55);
-    camera.lookAt(0, 0.1, 0);
-    camera.zoom = BASE_CAMERA_ZOOM;
-    camera.updateProjectionMatrix();
-
-    scene.add(new THREE.HemisphereLight(0xfff4dc, 0x301507, 0.72));
-    const keyLight = new THREE.DirectionalLight(0xffeed0, 2.35);
-    keyLight.position.set(4.6, 8.8, -4.6);
-    scene.add(keyLight);
-    const fillLight = new THREE.DirectionalLight(0x91b8e8, 0.2);
-    fillLight.position.set(-4.5, 3.2, 4.2);
-    scene.add(fillLight);
-    const stripKey = new THREE.RectAreaLight(0xfff4df, 4.4, 4.8, 1.15);
-    stripKey.position.set(3.8, 5.8, -3.8);
-    stripKey.lookAt(0, 0.25, 0);
-    scene.add(stripKey);
-    const stripRim = new THREE.RectAreaLight(0xb9d7ff, 1.25, 1.1, 3.8);
-    stripRim.position.set(-4.2, 3.2, 3.1);
-    stripRim.lookAt(0, 0.3, 0);
-    scene.add(stripRim);
-
-    const geometry = createDieGeometry();
-    const resources = new Map<PlayerColor, ReturnType<typeof createDieFaceResources>>();
-    (["blue", "red", "green", "yellow"] as PlayerColor[]).forEach((color) => {
-      resources.set(color, createDieFaceResources(color));
-    });
-    const mesh = new THREE.Mesh(geometry, resources.get("blue")?.materials);
-    scene.add(mesh);
-
-    const shadowTexture = createShadowTexture();
-    const shadowGeometry = new THREE.CircleGeometry(1, 48);
-    const shadowMaterial = new THREE.MeshBasicMaterial({
-      map: shadowTexture,
-      color: 0x2c1407,
-      transparent: true,
-      opacity: 0.44,
-      depthWrite: false,
-      toneMapped: false
-    });
-    const shadow = new THREE.Mesh(shadowGeometry, shadowMaterial);
-    shadow.rotation.x = -Math.PI / 2;
-    shadow.position.y = 0.008;
-    const groundedShadow = shadowPresentation(DIE_FLOOR_CENTER_Y);
-    shadow.position.x = groundedShadow.offsetX;
-    shadow.position.z = groundedShadow.offsetZ;
-    shadow.scale.set(groundedShadow.scaleX, groundedShadow.scaleZ, 1);
-    scene.add(shadow);
-
-    const viewAxis = camera.position.clone().normalize();
-    const facingQuaternion = new THREE.Quaternion();
-    let width = 0;
-    let height = 0;
-    let animationFrame = 0;
-    let lastRenderTime = 0;
-    let ready = false;
-
-    const resize = () => {
-      width = Math.max(1, window.innerWidth);
-      height = Math.max(1, window.innerHeight);
-      renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 1.5));
-      renderer.setSize(width, height, false);
-    };
-
-    const render = (now: number) => {
-      animationFrame = window.requestAnimationFrame(render);
-      const movingDiceVisible = Boolean(document.querySelector(
-        ".floating-reroll-tray.is-returning, .drag-preview, .bot-drag-preview, .invalid-return-preview, .die-face.is-landing"
-      ));
-      const targetFps = movingDiceVisible ? MOVING_TARGET_FPS : RESTING_TARGET_FPS;
-      if (document.hidden || now - lastRenderTime < 1000 / targetFps) return;
-      lastRenderTime = now;
-      if (width !== window.innerWidth || height !== window.innerHeight) resize();
-
-      renderer.setScissorTest(false);
-      renderer.clear(true, true, true);
-      renderer.setScissorTest(true);
-
-      let renderedAny = false;
-      const visibleBadges = new Set<HTMLElement>();
-      const visibleLocks = new Set<HTMLElement>();
-      const targets = Array.from(document.querySelectorAll<HTMLElement>(LIVE_DIE_SELECTOR));
-      const rerollTray = document.querySelector<HTMLElement>(".floating-reroll-tray");
-      const rerollTrayRect = rerollTray?.getBoundingClientRect();
-      for (const target of targets) {
-        const value = liveDieValue(target);
-        const rect = target.getBoundingClientRect();
-        if (!value || rect.width < 4 || rect.height < 4 || rect.bottom < 0 || rect.top > height || rect.right < 0 || rect.left > width) {
-          continue;
+      const getDie = (key: HTMLElement | object, color: PlayerColor) => {
+        let instance = instances.get(key);
+        if (instance && instance.color !== color) {
+          scene.remove(instance.mesh, instance.contact);
+          instance.contact.material.dispose();
+          instances.delete(key);
+          instance = undefined;
         }
-        const style = window.getComputedStyle(target);
-        if (style.display === "none" || style.visibility === "hidden" || Number(style.opacity) === 0) continue;
-
-        const centerX = rect.left + rect.width / 2;
-        const centerY = rect.top + rect.height / 2;
-        const isFloatingDie = Boolean(target.closest(
-          ".drag-preview, .bot-drag-preview, .invalid-return-preview, .floating-reroll-tray.is-returning"
-        ));
-        const coveredByRerollTray = !isFloatingDie
-          && rerollTrayRect
-          && !target.closest(".floating-reroll-tray")
-          && centerX >= rerollTrayRect.left
-          && centerX <= rerollTrayRect.right
-          && centerY >= rerollTrayRect.top
-          && centerY <= rerollTrayRect.bottom;
-        if (coveredByRerollTray) continue;
-        const hit = document.elementFromPoint(
-          Math.max(0, Math.min(width - 1, centerX)),
-          Math.max(0, Math.min(height - 1, centerY))
-        );
-        const coveredOnlyByLoader = Boolean(hit?.closest(".dice-render-loader"));
-        const coveredOnlyByTurnPrompt = Boolean(hit?.closest(".turn-start-backdrop"));
-        if (
-          !isFloatingDie
-          && !coveredOnlyByLoader
-          && !coveredOnlyByTurnPrompt
-          && hit
-          && hit !== target
-          && !target.contains(hit)
-          && !hit.contains(target)
-        ) continue;
-
-        const explicitColor = target.dataset.liveDieColor as PlayerColor | undefined;
-        const color = explicitColor ?? playerColorForOwner(target.dataset.liveDieOwner ?? "p1");
-        const materialResource = resources.get(color) ?? resources.get("blue");
-        if (!materialResource) continue;
-        mesh.material = materialResource.materials;
-        const dieHeight = presentationHeight(target);
-        mesh.position.y = dieHeight;
-        mesh.quaternion.copy(finalDieQuaternion(value, 0, 0));
-        const facingAngle = tabletopFacingAngle(target) + (target.classList.contains("is-selected") ? -Math.PI / 90 : 0);
-        if (facingAngle !== 0) {
-          facingQuaternion.setFromAxisAngle(viewAxis, facingAngle);
-          mesh.quaternion.premultiply(facingQuaternion);
+        if (!instance) {
+          const mesh = palette.create(color);
+          const contact = new THREE.Mesh(contactGeometry, new THREE.MeshBasicMaterial({
+            map: contactTexture, transparent: true, opacity: 0.25, depthWrite: false, toneMapped: false
+          }));
+          contact.rotation.x = -Math.PI / 2;
+          instance = { mesh, contact, color };
+          instances.set(key, instance);
+          scene.add(mesh, contact);
         }
+        instance.mesh.visible = true;
+        return instance;
+      };
 
-        const dieShadow = shadowPresentation(dieHeight);
-        shadow.position.x = dieShadow.offsetX;
-        shadow.position.z = dieShadow.offsetZ;
-        shadow.scale.set(dieShadow.scaleX, dieShadow.scaleZ, 1);
-        shadowMaterial.opacity = dieShadow.opacity;
+      const positionContact = (instance: VisibleDie, floor: number, size: number) => {
+        const lift = instance.mesh.position.y - floor - DIE_FLOOR_CENTER_Y * size;
+        instance.contact.visible = lift < 0.3 * size;
+        instance.contact.position.set(instance.mesh.position.x, floor + 0.006, instance.mesh.position.z);
+        instance.contact.scale.set(size * 1.35, size * 1.35, 1);
+        instance.contact.material.opacity = Math.max(0, 0.24 * (1 - lift / (0.3 * size)));
+      };
 
-        const targetSize = Math.max(rect.width, rect.height);
-        const lift = Math.max(0, dieHeight - DIE_FLOOR_CENTER_Y);
-        const regionScale = 2.08 + Math.min(0.84, lift * 0.54);
-        const regionSize = Math.max(16, targetSize * regionScale);
-        camera.zoom = BASE_CAMERA_ZOOM * (BASE_REGION_SCALE / regionScale);
-        camera.updateProjectionMatrix();
-        const viewportX = centerX - regionSize / 2;
-        const viewportY = height - centerY - regionSize / 2;
-        renderer.setViewport(viewportX, viewportY, regionSize, regionSize);
-        renderer.setScissor(viewportX, viewportY, regionSize, regionSize);
-        renderer.clearDepth();
-        renderer.render(scene, camera);
-        renderedAny = true;
-
+      const render = (now: number) => {
+        frame = requestAnimationFrame(render);
+        const moving = liveRolls.size > 0 || Boolean(document.querySelector(
+          ".floating-reroll-tray.is-returning, .drag-preview, .bot-drag-preview, .invalid-return-preview, .die-face.is-landing"));
+        if (document.hidden || now - lastTime < (moving ? 15 : 32)) return;
+        lastTime = now;
+        const board = document.querySelector<HTMLElement>(".board-grid");
+        const boardRect = board?.getBoundingClientRect();
+        const nextPixels = Math.max(18, (boardRect?.width ?? 320) / 9.6);
+        if (width !== innerWidth || height !== innerHeight || Math.abs(nextPixels - pixelsPerUnit) > 0.01) {
+          width = Math.max(1, innerWidth);
+          height = Math.max(1, innerHeight);
+          pixelsPerUnit = nextPixels;
+          renderer.setSize(width, height, false);
+          renderer.domElement.style.width = `${width}px`;
+          renderer.domElement.style.height = `${height}px`;
+          camera.left = -width / pixelsPerUnit / 2;
+          camera.right = -camera.left;
+          camera.top = height / pixelsPerUnit / 2;
+          camera.bottom = -camera.top;
+          camera.updateProjectionMatrix();
+          lighting.resize(width / pixelsPerUnit, height / pixelsPerUnit);
+          lastShadowSignature = "";
+        }
+        const modal = document.querySelector(".menu-backdrop, .winner-celebration");
+        const rollTray = document.querySelector<HTMLElement>(".opening-roll-tray, .floating-reroll-tray");
+        const rollRect = rollTray?.getBoundingClientRect();
+        const returning = rollTray?.matches(".is-return-preparing, .is-returning") ?? false;
+        const coveredByRoll = (rect: DOMRect) => !returning && rollRect &&
+          rect.left + rect.width / 2 >= rollRect.left && rect.left + rect.width / 2 <= rollRect.right &&
+          rect.top + rect.height / 2 >= rollRect.top && rect.top + rect.height / 2 <= rollRect.bottom;
+        const activeSurfaceElements = new Set<Element>();
+        for (const element of document.querySelectorAll<HTMLElement>(
+          ".board-wrap, .dice-rail-groove, .opponent-dice-rail, .opening-roll-tray, .floating-reroll-tray")) {
+          const rect = element.getBoundingClientRect();
+          if (rect.width < 4 || rect.height < 4 || rect.bottom < 0 || rect.top > height || modal) continue;
+          const style = getComputedStyle(element);
+          if (style.visibility === "hidden" || style.display === "none" || style.opacity === "0") continue;
+          if (element !== rollTray && coveredByRoll(rect)) continue;
+          if (element === rollTray && returning) continue;
+          activeSurfaceElements.add(element);
+          const kind: TableSurfaceKind = element.matches(".board-wrap") ? "board"
+            : element.matches(".floating-reroll-tray, .opening-roll-tray") ? "roll" : "tray";
+          const inner = element.querySelector<HTMLElement>(".board-grid")?.getBoundingClientRect();
+          const borderWidth = Math.min(parseFloat(style.borderLeftWidth) || 3, parseFloat(style.borderTopWidth) || 3);
+          const availableRim = inner
+            ? Math.min(inner.left - rect.left, inner.top - rect.top, rect.right - inner.right, rect.bottom - inner.bottom)
+            : borderWidth + Math.min(parseFloat(style.paddingLeft) || 0, parseFloat(style.paddingTop) || 0) * 0.65;
+          const options = {
+            width: rect.width / pixelsPerUnit,
+            depth: rect.height / pixelsPerUnit / TABLE_CAMERA_COS,
+            kind,
+            rimWidth: Math.max(2, availableRim) / pixelsPerUnit
+          };
+          let surface = surfaces.get(element);
+          if (!surface) {
+            surface = surfaceFactory.create(options);
+            surfaces.set(element, surface);
+            scene.add(surface.group);
+            lastShadowSignature = "";
+          } else if (surface.update(options)) {
+            lastShadowSignature = "";
+          }
+          // Keep the existing maple playing area and accessible DOM grid inside a
+          // real raised wooden frame, all under the same camera and lights.
+          worldPosition(rect.left + rect.width / 2, rect.top + rect.height / 2, surface.floorY, surface.group.position);
+          surface.group.visible = true;
+          const active = kind === "board" || Boolean(element.closest(
+            ".dice-tray.is-active-player, .opponent-tray-row.is-active-player, .tabletop-tray-slot.is-active"));
+          surface.setAccent(active ? style.getPropertyValue(kind === "board" ? "--active-player-color" : "--rail-accent").trim()
+            || style.getPropertyValue("--tray-player-color").trim() || null : null);
+        }
+        for (const [element, surface] of surfaces) {
+          if (!activeSurfaceElements.has(element)) {
+            surface.dispose();
+            surfaces.delete(element);
+            lastShadowSignature = "";
+          }
+        }
+        table.visible = !modal;
+        table.position.y = TABLE_SURFACE_Y;
+        table.scale.set(width / pixelsPerUnit * 1.2, height / pixelsPerUnit / TABLE_CAMERA_COS * 1.2, 1);
+        for (const instance of instances.values()) { instance.mesh.visible = false; instance.contact.visible = false; }
+        const activeInstances = new Set<object>();
+        let renderedAny = false;
+        const visibleBadges = new Set<HTMLElement>();
+        const visibleLocks = new Set<HTMLElement>();
+        for (const target of document.querySelectorAll<HTMLElement>(LIVE_DIE_SELECTOR)) {
+          const value = liveDieValue(target);
+          const rect = target.getBoundingClientRect();
+          if (!value || rect.width < 4 || rect.height < 4 || rect.bottom < 0 || rect.top > height || rect.right < 0 || rect.left > width || modal) continue;
+          const style = getComputedStyle(target);
+          if (style.display === "none" || style.visibility === "hidden" || Number(style.opacity) === 0) continue;
+          const centerX = rect.left + rect.width / 2, centerY = rect.top + rect.height / 2;
+          const floating = Boolean(target.closest(".drag-preview, .bot-drag-preview, .invalid-return-preview, .floating-reroll-tray.is-returning"));
+          if (!floating && coveredByRoll(rect) && !target.closest(".floating-reroll-tray, .opening-roll-tray")) continue;
+          const hit = document.elementFromPoint(Math.max(0, Math.min(width - 1, centerX)), Math.max(0, Math.min(height - 1, centerY)));
+          if (!floating && hit && hit !== target && !target.contains(hit) && !hit.contains(target) &&
+            !hit.closest(".dice-render-loader, .turn-start-backdrop")) continue;
+          const color = target.dataset.liveDieColor as PlayerColor ?? playerColorForOwner(target.dataset.liveDieOwner ?? "p1");
+          const instance = getDie(target, color);
+          activeInstances.add(target);
+          // Size from the actual cell/well, not a board-wide cap that shrinks tray dice.
+          const size = Math.max(rect.width, rect.height) / pixelsPerUnit / 1.04;
+          const floor = target.closest(".board-wrap, .floating-reroll-tray, .opening-roll-tray") || floating
+            ? BOARD_SURFACE_Y : TRAY_SURFACE_Y;
+          const lift = presentationHeight(target) - DIE_FLOOR_CENTER_Y;
+          const elevation = floor + DIE_FLOOR_CENTER_Y * size + lift * size * 0.65;
+          worldPosition(centerX, centerY, elevation, instance.mesh.position);
+          instance.mesh.scale.setScalar(size);
+          instance.mesh.quaternion.copy(finalDieQuaternion(value, 0, 0));
+          const facing = tabletopFacingAngle(target);
+          instance.mesh.quaternion.premultiply(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), -facing));
+          positionContact(instance, floor, size);
+          renderedAny = true;
         const sourceBadge = target.querySelector<HTMLElement>(":scope > .die-multiplier");
         if (sourceBadge) {
           let overlayBadge = badgeOverlays.get(target);
@@ -338,37 +338,81 @@ export default function LiveDice3DLayer({ onReady }: { onReady: () => void }): R
         }
       }
 
-      if (renderedAny && !ready) {
-        ready = true;
-        document.documentElement.classList.add("live-dice-3d-ready");
+
+        for (const presentation of liveRolls.values()) {
+          if (modal || !presentation.host.isConnected) continue;
+          for (const pose of presentation.dice) {
+            const screen = rollScreenPosition(presentation, pose.position);
+            const size = screen.pixelsPerUnit / pixelsPerUnit;
+            const instance = getDie(pose, pose.color);
+            activeInstances.add(pose);
+            const elevation = BOARD_SURFACE_Y + pose.position.y * size;
+            worldPosition(screen.x, screen.y, elevation, instance.mesh.position);
+            instance.mesh.quaternion.copy(pose.quaternion);
+            instance.mesh.scale.copy(pose.scale).multiplyScalar(size);
+            positionContact(instance, BOARD_SURFACE_Y, size);
+            renderedAny = true;
+          }
+        }
+        for (const [key, instance] of instances) {
+          if (!activeInstances.has(key)) {
+            scene.remove(instance.mesh, instance.contact);
+            instance.contact.material.dispose();
+            instances.delete(key);
+          }
+        }
+        const signature = [...instances.values()].map(({ mesh }) =>
+          [...mesh.position.toArray(), ...mesh.quaternion.toArray(), mesh.scale.x].map(v => v.toFixed(3)).join(",")).join("|")
+          + [...surfaces.values()].map(({ group }) => group.position.toArray().join(",")).join("|");
+        if (signature !== lastShadowSignature) {
+          renderer.shadowMap.needsUpdate = true;
+          lastShadowSignature = signature;
+        }
+        renderer.render(scene, camera);
+        renderer.domElement.dataset.diceCount = String(instances.size);
+        renderer.domElement.dataset.drawCalls = String(renderer.info.render.calls);
+        renderer.domElement.dataset.triangles = String(renderer.info.render.triangles);
+        if (!ready) {
+          ready = true;
+          document.documentElement.classList.add("live-dice-3d-ready");
+          document.documentElement.classList.remove("dice-3d-unavailable");
+          onReady();
+        }
+      };
+      frame = requestAnimationFrame(render);
+      const contextLost = (event: Event) => {
+        event.preventDefault();
+        if (!disposed) document.documentElement.classList.add("dice-3d-unavailable");
+      };
+      const contextRestored = () => { document.documentElement.classList.remove("dice-3d-unavailable"); lastShadowSignature = ""; };
+      renderer.domElement.addEventListener("webglcontextlost", contextLost);
+      renderer.domElement.addEventListener("webglcontextrestored", contextRestored);
+      cleanup = () => {
+        cancelAnimationFrame(frame);
+        document.documentElement.classList.remove("live-dice-3d-ready", "live-dice-3d-overlay-ready", "dice-3d-unavailable");
+        badgeLayer.remove();
+        instances.forEach(({ contact }) => contact.material.dispose());
+        palette.dispose();
+        contactGeometry.dispose();
+        contactTexture.dispose();
+        surfaceFactory.dispose();
+        table.geometry.dispose();
+        shadowMaterial.dispose();
+        lighting.dispose();
+        renderer.domElement.removeEventListener("webglcontextlost", contextLost);
+        renderer.domElement.removeEventListener("webglcontextrestored", contextRestored);
+        renderer.dispose();
+        renderer.forceContextLoss();
+        renderer.domElement.remove();
+      };
+    }).catch(error => {
+      console.error("Unable to load the game dice", error);
+      if (!disposed) {
+        document.documentElement.classList.add("dice-3d-unavailable");
         onReady();
       }
-    };
-
-    resize();
-    animationFrame = window.requestAnimationFrame(render);
-
-    return () => {
-      window.cancelAnimationFrame(animationFrame);
-      document.documentElement.classList.remove("live-dice-3d-ready");
-      document.documentElement.classList.remove("live-dice-3d-overlay-ready");
-      badgeOverlays.clear();
-      lockOverlays.clear();
-      messageOverlays.clear();
-      badgeLayer.remove();
-      geometry.dispose();
-      resources.forEach((resource) => resource.dispose());
-      shadowGeometry.dispose();
-      shadowMaterial.dispose();
-      shadowTexture.dispose();
-      environmentTarget.dispose();
-      pmremGenerator.dispose();
-      roomEnvironment.dispose();
-      renderer.dispose();
-      renderer.forceContextLoss();
-      renderer.domElement.remove();
-    };
+    });
+    return () => { disposed = true; cleanup?.(); };
   }, [onReady]);
-
   return null;
 }

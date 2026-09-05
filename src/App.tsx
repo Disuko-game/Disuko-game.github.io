@@ -3978,7 +3978,7 @@ function GameScreen({
           phase={rerollAnimation?.phase}
           playerColor={rerollTrayPlayer.color}
           variant={rerollAnimation?.variant ?? 0}
-          launchSide={game.tabletopMode ? "bottom" : rerollTrayPlayer.controller?.kind === "bot" ? "top" : "bottom"}
+          launchSide={game.tabletopMode ? tabletopSlotForPlayer(game, rerollTrayPlayer.id) : rerollTrayPlayer.controller?.kind === "bot" ? "top" : "bottom"}
           tabletopSlot={game.tabletopMode ? tabletopSlotForPlayer(game, rerollTrayPlayer.id) : undefined}
           canEdit={!rerollAnimation && canUseTurnControls}
           onDieClick={(die) => setRerollDieSelected(die.id, false)}
