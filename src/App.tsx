@@ -4481,6 +4481,11 @@ function Board({
       aria-label="Disuko board"
     >
       <div className="board-grid" role="grid" aria-label="6 by 6 Disuko board">
+        <svg className="board-grid-lines" viewBox="0 0 600 600" preserveAspectRatio="none" aria-hidden="true" focusable="false">
+          <path className="board-grid-lines-thin" d="M100 0V600 M300 0V600 M500 0V600 M0 100H600 M0 200H600 M0 400H600 M0 500H600" vectorEffect="non-scaling-stroke" />
+          <path className="board-grid-lines-thick" d="M200 0V600 M400 0V600 M0 300H600" vectorEffect="non-scaling-stroke" />
+          <rect className="board-grid-lines-edge" width="600" height="600" vectorEffect="non-scaling-stroke" />
+        </svg>
         {boardIndexes.map(({ row, col }) => {
           const die = getDieAt(game, row, col);
           const recentMoveColor = die ? recentMoveHighlights.get(die.id) : undefined;
