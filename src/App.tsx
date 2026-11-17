@@ -98,6 +98,8 @@ import {
   rerollVariantFromKey
 } from "./game/rerollTumbles";
 import { preloadRollPhysics } from "./game/rollPhysicsClient";
+import { playTableCue } from "./tableAudio";
+import { SoundToggle } from "./SoundToggle";
 
 const loadRerollDice3D = () => import("./RerollDice3D");
 const RerollDice3D = lazy(loadRerollDice3D);
@@ -1352,6 +1354,7 @@ function SettingsScreen({
     <OnlineFrame title="Settings" onBack={onBack}>
       {error ? <p className="setup-warning" role="alert">{error}</p> : null}
       <div className="online-stack">
+        <section className="online-card"><h2>Audio</h2><SoundToggle /></section>
         <section className="online-card">
           <h2>Profile</h2>
           <form className="online-inline-form" onSubmit={handleSubmit}>
@@ -2543,6 +2546,11 @@ function GameScreen({
   const [conflictBlockerHighlight, setConflictBlockerHighlight] = useState<ConflictBlockerHighlight | null>(null);
   const [completionReward, setCompletionReward] = useState<CompletionReward | null>(null);
   const [winnerCelebration, setWinnerCelebration] = useState<WinnerCelebrationLayout | null>(null);
+  const heardWinner = useRef(game.winnerId);
+  useEffect(() => {
+    if (game.winnerId && game.winnerId !== heardWinner.current) playTableCue("win");
+    heardWinner.current = game.winnerId;
+  }, [game.winnerId]);
   const [turnPromptOpen, setTurnPromptOpen] = useState(false);
   const [botDragAnimation, setBotDragAnimation] = useState<BotDragAnimation | null>(null);
   const [landingDieId, setLandingDieId] = useState<string | null>(null);
@@ -2703,6 +2711,8 @@ function GameScreen({
     }
 
     setLandingDieId(change.dieId);
+    const actor = game.lastAction ? game.players.find((player) => player.id === game.lastAction?.playerId) : undefined;
+    if (!shouldAnimateObservedAction(actor, onlinePlayerId)) playTableCue("drop");
     landingDieTimer.current = window.setTimeout(() => {
       setLandingDieId((current) => (current === change.dieId ? null : current));
       landingDieTimer.current = null;
@@ -2770,10 +2780,12 @@ function GameScreen({
       ?? previousPositions.get("tray:" + before.ownerId + ":" + before.value);
 
     if (!fromPosition || !toCell) {
+      playTableCue("drop");
       return;
     }
 
     if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
+      playTableCue("drop");
       return;
     }
 
@@ -2782,6 +2794,7 @@ function GameScreen({
     }
 
     botDragAnimationId.current += 1;
+    playTableCue("pickup");
     const id = botDragAnimationId.current;
     setBotDragAnimation({
       id,
@@ -2791,6 +2804,7 @@ function GameScreen({
       size: fromPosition.size
     });
     botDragAnimationTimer.current = window.setTimeout(() => {
+      playTableCue("drop");
       setBotDragAnimation((current) => (current?.id === id ? null : current));
       botDragAnimationTimer.current = null;
     }, 620);
@@ -3100,6 +3114,8 @@ function GameScreen({
       return;
     }
 
+    playTableCue(completionReward.phase === "highlight" ? "completion" : "bonus", completionReward.activeIndex);
+
     const timer = window.setTimeout(
       () => {
         setCompletionReward((current) => {
@@ -3166,6 +3182,7 @@ function GameScreen({
     }
 
     if (didAdvanceTurn || didFinishOpeningRoll) {
+      if (!isBotTurn) playTableCue("turn");
       clearDragState();
       setOpenRerollValue(null);
       setHasExplicitRerollSelection(false);
@@ -3339,6 +3356,7 @@ function GameScreen({
     const id = invalidMovePreviewId.current + 1;
     const returnKind = options.returnKind ?? (isOnBoard(die) ? "move" : "place");
     const showsInvalidFeedback = options.showsInvalidFeedback ?? false;
+    playTableCue(showsInvalidFeedback ? "invalid" : "drop");
 
     invalidMovePreviewId.current = id;
     setInvalidMovePreview({
@@ -3391,6 +3409,7 @@ function GameScreen({
 
   const setRerollDieSelected = (dieId: string, selected: boolean) => {
     if (rerollAnimation || game.mode !== "reroll") return;
+    playTableCue("drop");
     const selectedIds = new Set(game.selectedDieIds);
     if (selected) selectedIds.add(dieId);
     else selectedIds.delete(dieId);
@@ -3429,6 +3448,7 @@ function GameScreen({
       return;
     }
 
+    playTableCue("pickup");
     onCommit(selectDie(setMode(game, "place"), group.representativeDie.id));
   };
 
@@ -3535,6 +3555,7 @@ function GameScreen({
       return;
     }
 
+    playTableCue("pickup");
     onCommit(selectDie(setMode(game, "move"), die.id));
   };
 
@@ -3679,6 +3700,7 @@ function GameScreen({
       return;
     }
 
+    if (!candidate.isDragging) playTableCue("pickup");
     candidate.isDragging = true;
     event.preventDefault();
     setDragPreview({ die, x: event.clientX, y: event.clientY });
@@ -5366,6 +5388,7 @@ function MenuOverlay({
       <section className="menu-panel">
         <img src={logoUrl} alt="Disuko" />
         <h2 id="menu-title">Game menu</h2>
+        <SoundToggle />
         <p>
           Fill rows, columns, the six 2x3 boxes, and value sets to earn extra actions. Duplicates
           remain until challenged.

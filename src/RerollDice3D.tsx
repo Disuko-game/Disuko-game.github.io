@@ -10,6 +10,7 @@ import {
   type RerollTumbleTemplate
 } from "./game/rerollTumbles";
 import { prepareRollPhysics } from "./game/rollPhysicsClient";
+import { playTableImpact } from "./tableAudio";
 
 export interface Reroll3DDie {
   id: string;
@@ -202,6 +203,8 @@ export default function RerollDice3D({
       return shadow;
     });
     const impacts = template.tracks.map((track) => track.impacts);
+    const impactCursors = impacts.map(() => 0);
+    let previousAudioFrameMs = 0;
     const orientationCorrections = dice.map((die, index) => {
       const track = template.tracks[index];
       const baseStart = quaternionAtFrame(track.samples, 0);
@@ -285,6 +288,14 @@ export default function RerollDice3D({
           : { horizontal: 1, vertical: 1 };
         mesh.scale.set(deformation.horizontal, deformation.vertical, deformation.horizontal);
 
+        // Consume every event once. Skip old impacts after a background-tab/frame stall.
+        while (impactCursors[index] < impacts[index].length && impacts[index][impactCursors[index]].timeMs <= sampleElapsedMs) {
+          const impact = impacts[index][impactCursors[index]++];
+          if (!reducedMotion && sampleElapsedMs - previousAudioFrameMs < 150) {
+            playTableImpact(impact.kind, impact.strength, mesh.position.x / 5);
+          }
+        }
+
         const shadow = shadowPresentation(mesh.position.y);
         shadows[index].position.x = mesh.position.x + shadow.offsetX;
         shadows[index].position.z = mesh.position.z + shadow.offsetZ;
@@ -292,6 +303,7 @@ export default function RerollDice3D({
         shadowMaterials[index].opacity = shadow.opacity;
       });
 
+      previousAudioFrameMs = sampleElapsedMs;
       if (!reportedSettledCenters && sampleElapsedMs >= template.durationMs) {
         const hostRect = host.getBoundingClientRect();
         const centers = Object.fromEntries(meshes.map((mesh, index) => {

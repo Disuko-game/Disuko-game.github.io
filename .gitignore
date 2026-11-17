@@ -16,4 +16,5 @@ dist-botlab/
 __pycache__/
 *.pyc
 /.tools/
+/output/audio/
 *.blend1
