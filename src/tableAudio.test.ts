@@ -38,7 +38,7 @@ describe("table sample playback", () => {
   async function ready() {
     const audio = await import("./tableAudio");
     audio.unlockTableAudio();
-    await vi.waitFor(() => expect(fetchAudio).toHaveBeenCalledTimes(23));
+    await vi.waitFor(() => expect(fetchAudio).toHaveBeenCalledTimes(25));
     await new Promise((resolve) => setTimeout(resolve, 0));
     return audio;
   }
@@ -46,8 +46,8 @@ describe("table sample playback", () => {
   it("loads every local sample once across repeated unlock gestures", async () => {
     const audio = await ready();
     audio.unlockTableAudio();
-    expect(fetchAudio).toHaveBeenCalledTimes(23);
-    expect(fetchAudio.mock.calls.every(([url]) => url.includes("audio/table-v1/") && url.endsWith(".wav"))).toBe(true);
+    expect(fetchAudio).toHaveBeenCalledTimes(25);
+    expect(fetchAudio.mock.calls.every(([url]) => url.includes("audio/table-v2/") && url.endsWith(".wav"))).toBe(true);
     audio.playTableCue("drop");
     expect(sources[0].start).toHaveBeenCalledOnce();
   });
@@ -76,11 +76,13 @@ describe("table sample playback", () => {
   it("limits dense collisions and preserves contact material", async () => {
     const audio = await ready();
     audio.playTableImpact("floor", 1, -1);
-    audio.playTableImpact("die", 1, 1);
+    audio.playTableImpact("wall", 1, 1);
     expect(sources).toHaveLength(1);
-    clock.currentTime += 0.02;
+    // A plastic collision may sound alongside wood; duplicate pair reports may not.
+    audio.playTableImpact("die", 0.2, 1);
     audio.playTableImpact("die", 0.2, 1);
     expect(sources).toHaveLength(2);
+    clock.currentTime += 0.03;
     expect((sources[0].buffer as { name: string }).name).toContain("dice-floor-");
     expect((sources[1].buffer as { name: string }).name).toContain("dice-die-");
   });

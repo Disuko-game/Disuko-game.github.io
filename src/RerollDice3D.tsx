@@ -11,6 +11,7 @@ import {
 } from "./game/rerollTumbles";
 import { prepareRollPhysics } from "./game/rollPhysicsClient";
 import { playTableImpact } from "./tableAudio";
+import { isAudibleRollImpact } from "./game/rollAudio";
 
 export interface Reroll3DDie {
   id: string;
@@ -291,7 +292,7 @@ export default function RerollDice3D({
         // Consume every event once. Skip old impacts after a background-tab/frame stall.
         while (impactCursors[index] < impacts[index].length && impacts[index][impactCursors[index]].timeMs <= sampleElapsedMs) {
           const impact = impacts[index][impactCursors[index]++];
-          if (!reducedMotion && sampleElapsedMs - previousAudioFrameMs < 150) {
+          if (!reducedMotion && sampleElapsedMs - previousAudioFrameMs < 150 && isAudibleRollImpact(track, impact, template.frameRate)) {
             playTableImpact(impact.kind, impact.strength, mesh.position.x / 5);
           }
         }

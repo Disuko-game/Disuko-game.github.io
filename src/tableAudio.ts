@@ -3,7 +3,7 @@ import type { RerollImpactKind } from "./game/rerollTumbles";
 export type TableCue = "pickup" | "drop" | "click" | "invalid" | "completion" | "bonus" | "turn" | "win";
 type Sound = TableCue | `dice-${RerollImpactKind}`;
 const counts: Record<Sound, number> = {
-  "dice-floor": 3, "dice-wall": 3, "dice-die": 3,
+  "dice-floor": 4, "dice-wall": 4, "dice-die": 3,
   pickup: 3, drop: 3, click: 3, invalid: 1, completion: 1, bonus: 1, turn: 1, win: 1
 };
 const levels: Record<TableCue, number> = {
@@ -16,7 +16,7 @@ let master: GainNode | undefined;
 let enabled = readEnabled();
 let installed = false;
 let loading: Promise<void> | undefined;
-let lastImpactAt = -1;
+const lastImpactAt = { wood: -1, die: -1 };
 const buffers = new Map<string, AudioBuffer>();
 const previous = new Map<Sound, number>();
 const active = new Set<AudioBufferSourceNode>();
@@ -74,7 +74,7 @@ export function unlockTableAudio(): void {
       Array.from({ length: count }, (_, index) => {
         const name = `${sound}-${index + 1}`;
         if (buffers.has(name)) return Promise.resolve();
-        return fetch(`${import.meta.env.BASE_URL}audio/table-v1/${name}.wav`)
+        return fetch(`${import.meta.env.BASE_URL}audio/table-v2/${name}.wav`)
           .then((response) => {
             if (!response.ok) throw new Error(`Audio ${response.status}: ${name}`);
             return response.arrayBuffer();
@@ -122,8 +122,9 @@ export function playTableCue(cue: TableCue, variant = 0, pan = 0): void {
 }
 
 export function playTableImpact(kind: RerollImpactKind, strength: number, pan: number): void {
-  if (!context || context.currentTime - lastImpactAt < 0.018) return;
-  lastImpactAt = context.currentTime;
+  const material = kind === "die" ? "die" : "wood";
+  if (!context || context.currentTime - lastImpactAt[material] < 0.025) return;
+  lastImpactAt[material] = context.currentTime;
   const safe = Math.max(0.06, Math.min(1, strength));
-  play(`dice-${kind}`, 0.07 + 0.48 * safe ** 1.3, pan, 0.97 + Math.random() * 0.06);
+  play(`dice-${kind}`, (0.025 + 0.48 * safe ** 1.6) * (kind === "die" ? 0.62 : 1), pan, 0.98 + Math.random() * 0.04);
 }
