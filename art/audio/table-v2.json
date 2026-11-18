@@ -115,16 +115,18 @@
       "sha256": "61021a40ff2e165a0f0fce34b22eda9ee6917cbcad9c7e08f80648ba40db51b4"
     },
     {
-      "file": "invalid-1.wav",
+      "file": "invalid-marimba-fast-1.wav",
       "cue": "invalid",
-      "generation_id": "bs5f7omHmCl90XbsSnQh",
-      "prompt": "Two gentle muted knocks on a small walnut woodblock, the second a little lower and softer. Understated friendly board-game invalid-move feedback. Real physical wood, intimate dry studio Foley, short d",
-      "source_take": 1,
-      "trim_start_seconds": 0.00394,
-      "duration_seconds": 0.53958,
+      "generation_id": "wKNz7a634G1w4AS9GJ3Z",
+      "prompt": "Two quiet descending low-mid notes played on a real wooden marimba with soft mallets. A brief warm rounded do-dum, gently indicating an invalid board-game move. Natural acoustic body and short decay, intimate clean studio recording. Just two notes, no accompaniment, no voice, no synth or buzzer.",
+      "selected_option": 2,
+      "tempo_multiplier": 2,
+      "pitch_preserved": true,
+      "source_sha256": "25791a3055a4a0915d8bbcff55c9c9a4e0fc10371b9f73966cfe744b61747857",
+      "duration_seconds": 0.340125,
       "peak_dbfs": -2.5,
-      "rms_dbfs": -31.89,
-      "sha256": "eda104cdedb5b065a83804e000785a9e95fb171765b972d2fbe73969621a8532"
+      "rms_dbfs": -14.9,
+      "sha256": "7c9f1d2232ac681ad28adb64bfa2297ff8577eec36907a82e5b81d12ac24a512"
     },
     {
       "file": "completion-1.wav",

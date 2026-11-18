@@ -74,7 +74,8 @@ export function unlockTableAudio(): void {
       Array.from({ length: count }, (_, index) => {
         const name = `${sound}-${index + 1}`;
         if (buffers.has(name)) return Promise.resolve();
-        return fetch(`${import.meta.env.BASE_URL}audio/table-v2/${name}.wav`)
+        const file = sound === "invalid" ? "invalid-marimba-fast-1" : name;
+        return fetch(`${import.meta.env.BASE_URL}audio/table-v2/${file}.wav`)
           .then((response) => {
             if (!response.ok) throw new Error(`Audio ${response.status}: ${name}`);
             return response.arrayBuffer();

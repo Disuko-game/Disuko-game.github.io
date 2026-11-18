@@ -2,7 +2,7 @@
 
 The web game and Quest player use the same 25 mono 48 kHz / 16-bit PCM clips in
 `public/audio/table-v2` and `quest/DisukoMR/Assets/Resources/Audio/TableV2`.
-The complete library is 799,612 bytes on each platform. No generation service or
+The complete library is 780,464 bytes on each platform. No generation service or
 API credential is needed at runtime.
 
 Generated through the connected ElevenLabs plugin, Sound Effects v2, on 2026-11-17.
@@ -19,7 +19,7 @@ distinct takes are used for recurring physical contacts and one for each reward.
 | Pickup | Fingertip brush and small plastic scrape; three takes |
 | Placement | One die carefully set flat on wood; three takes |
 | Button | Small wooden mechanical tick; three takes |
-| Invalid | Two muted woodblock knocks |
+| Invalid | User-selected option 2: descending marimba, 2x tempo with pitch preserved |
 | Completion | Celesta note, raised through six pentatonic steps for successive keys |
 | Bonus | Short ascending marimba reward |
 | Turn | Gentle thumb-piano invitation |
@@ -55,3 +55,8 @@ completion/bonus, pickup/placement, and victory. Numerical QA confirms all deplo
 clips are finite, audible, below clipping, and byte-identical across
 platforms. Subjective playback through the wearer's Quest speakers remains a
 separate listening check.
+
+On 2026-11-18 the invalid cue was replaced with the user-selected descending
+marimba (option 2), accelerated with FFmpeg `atempo=2` while preserving pitch.
+Its duration is 0.340125 seconds, exactly half the selected master. A new filename
+keeps existing browser caches from serving the previous invalid sound.

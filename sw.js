@@ -1,4 +1,4 @@
-const CACHE_NAME = "disuko-pwa-e071919bb20c";
+const CACHE_NAME = "disuko-pwa-406f03d64911";
 const APP_SHELL = [
   "./",
   "./logo.png",
@@ -15,7 +15,7 @@ const APP_SHELL = [
   "./audio/table-v2/click-1.wav",
   "./audio/table-v2/click-2.wav",
   "./audio/table-v2/click-3.wav",
-  "./audio/table-v2/invalid-1.wav",
+  "./audio/table-v2/invalid-marimba-fast-1.wav",
   "./audio/table-v2/completion-1.wav",
   "./audio/table-v2/bonus-1.wav",
   "./audio/table-v2/turn-1.wav",
